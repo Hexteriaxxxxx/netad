@@ -1,0 +1,25 @@
+# Environment
+.env
+
+# RSA Keys — never commit these
+security/private_key.pem
+security/public_key.pem
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# AI model files (large, regenerate on first run)
+ai/anomaly_model.pkl
+ai/anomaly_scaler.pkl
+
+# OS
+.DS_Store
+Thumbs.db

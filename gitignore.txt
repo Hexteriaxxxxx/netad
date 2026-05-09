@@ -1,0 +1,5 @@
+.env
+security/private_key.pem
+__pycache__/
+*.pyc
+*.pem

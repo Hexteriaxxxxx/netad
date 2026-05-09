@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>NETAD · Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<style>
+:root{--bg:#070D14;--bg2:#0D1620;--bg3:#111E2E;--bg4:#162438;--accent:#00E5A0;--red:#FF4D4D;--amber:#FFB344;--blue:#00B4D8;--text:#E8F0F8;--text2:#7A9BB8;--text3:#3D5A72;--border:rgba(0,229,160,0.11);--border2:rgba(0,229,160,0.25);--mono:'JetBrains Mono',monospace;--sans:'Inter',sans-serif;}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;overflow-x:hidden;animation:pageIn 0.45s cubic-bezier(0.22,1,0.36,1);}
+@keyframes pageIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+body.leaving{animation:pageOut 0.3s ease forwards;}
+@keyframes pageOut{to{opacity:0}}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(0,229,160,0.025) 1px,transparent 1px),linear-gradient(90deg,rgba(0,229,160,0.025) 1px,transparent 1px);background-size:36px 36px;pointer-events:none;z-index:0;}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:0.85rem 1.5rem;background:var(--bg2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:50;}
+.topbar-left{display:flex;align-items:center;gap:14px;}
+.tb-logo{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--accent);letter-spacing:3px;}
+.tb-divider{width:1px;height:18px;background:var(--border2);}
+.tb-session{font-size:11px;color:var(--text2);}
+.tb-session span{color:var(--text);font-weight:500;}
+.topbar-right{display:flex;align-items:center;gap:10px;}
+.tb-online{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;color:var(--accent);}
+.tb-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 7px var(--accent);animation:tbpulse 2s infinite;}
+@keyframes tbpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:0.5;transform:scale(0.88)}}
+.tb-time{font-family:var(--mono);font-size:10px;color:var(--text3);}
+.logout-btn{padding:6px 14px;background:transparent;border:1px solid rgba(255,77,77,0.3);border-radius:6px;color:var(--red);font-size:10px;font-family:var(--mono);letter-spacing:1px;cursor:pointer;transition:background 0.2s;}
+.logout-btn:hover{background:rgba(255,77,77,0.08);}
+.dash-body{padding:1.5rem;position:relative;z-index:1;}
+.welcome-banner{background:linear-gradient(135deg,rgba(0,229,160,0.07),rgba(0,180,216,0.04));border:1px solid rgba(0,229,160,0.18);border-radius:12px;padding:1rem 1.25rem;margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;}
+.wb-left{display:flex;align-items:center;gap:12px;}
+.wb-icon{width:36px;height:36px;background:rgba(0,229,160,0.1);border:1px solid var(--border2);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;}
+.wb-title{font-size:14px;font-weight:600;margin-bottom:2px;}
+.wb-sub{font-size:11px;color:var(--text2);font-family:var(--mono);}
+.wb-badge{background:rgba(0,229,160,0.1);border:1px solid var(--border2);border-radius:20px;padding:4px 12px;font-family:var(--mono);font-size:9px;color:var(--accent);letter-spacing:1.5px;}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:1.5rem;}
+.metric-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:1rem;position:relative;overflow:hidden;transition:border-color 0.2s,transform 0.15s;}
+.metric-card:hover{border-color:var(--border2);transform:translateY(-1px);}
+.metric-card::after{content:'';position:absolute;top:0;left:0;right:0;height:1.5px;background:var(--accent);opacity:0.35;}
+.metric-label{font-size:9px;font-family:var(--mono);color:var(--text2);letter-spacing:1.5px;margin-bottom:8px;text-transform:uppercase;}
+.metric-value{font-size:28px;font-weight:600;font-family:var(--mono);}
+.metric-delta{font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:4px;}
+.mv-green{color:var(--accent)}.mv-red{color:var(--red)}.mv-amber{color:var(--amber)}.mv-blue{color:var(--blue)}.mv-white{color:var(--text)}
+.tabs{display:flex;gap:3px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:4px;margin-bottom:1.5rem;flex-wrap:wrap;}
+.tab{padding:7px 18px;border-radius:7px;font-size:10px;font-family:var(--mono);letter-spacing:1px;cursor:pointer;color:var(--text2);transition:all 0.2s;border:1px solid transparent;user-select:none;}
+.tab:hover{color:var(--text);}
+.tab.active{background:var(--bg4);color:var(--accent);border-color:var(--border2);}
+.tab-section{display:none;}
+.tab-section.active{display:block;animation:tabIn 0.25s ease;}
+@keyframes tabIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem;}
+.grid-full{margin-bottom:1rem;}
+.panel{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:1.25rem;}
+.panel-title{font-size:10px;font-family:var(--mono);color:var(--text2);letter-spacing:2px;margin-bottom:1rem;display:flex;align-items:center;justify-content:space-between;text-transform:uppercase;}
+.panel-badge{background:var(--bg3);border:1px solid var(--border);border-radius:12px;padding:2px 8px;font-size:9px;color:var(--text3);}
+.layer-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04);}
+.layer-row:last-child{border-bottom:none;}
+.layer-left{display:flex;align-items:center;gap:10px;}
+.layer-icon{width:28px;height:28px;border-radius:7px;background:rgba(0,229,160,0.07);border:1px solid rgba(0,229,160,0.15);display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0;}
+.layer-name{font-family:var(--mono);font-size:11px;color:var(--text);}
+.layer-desc{font-size:9px;color:var(--text3);margin-top:1px;}
+.tag-alive{background:rgba(0,229,160,0.11);color:var(--accent);font-size:9px;padding:2px 8px;border-radius:4px;font-family:var(--mono);font-weight:700;}
+.tag-dead{background:rgba(255,77,77,0.11);color:var(--red);font-size:9px;padding:2px 8px;border-radius:4px;font-family:var(--mono);font-weight:700;}
+.tag-loading{background:rgba(122,155,184,0.1);color:var(--text3);font-size:9px;padding:2px 8px;border-radius:4px;font-family:var(--mono);font-weight:700;}
+.cam-feed{background:var(--bg3);border:1px solid var(--border);border-radius:8px;height:88px;display:flex;align-items:center;justify-content:center;margin-bottom:8px;position:relative;overflow:hidden;}
+.cam-feed::before{content:'';position:absolute;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,229,160,0.018) 2px,rgba(0,229,160,0.018) 4px);}
+.cam-inner{text-align:center;position:relative;z-index:1;}
+.cam-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);margin:0 auto 6px;box-shadow:0 0 10px var(--accent);animation:tbpulse 1.5s infinite;}
+.cam-label{font-size:9px;font-family:var(--mono);color:var(--accent);letter-spacing:1.5px;}
+.log-header{display:grid;grid-template-columns:90px 1fr 1fr 85px;gap:8px;font-size:9px;font-family:var(--mono);color:var(--text3);letter-spacing:1.5px;padding-bottom:8px;border-bottom:1px solid var(--border);text-transform:uppercase;}
+.log-row{display:grid;grid-template-columns:90px 1fr 1fr 85px;gap:8px;font-size:11px;font-family:var(--mono);padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.03);align-items:center;transition:background 0.15s;}
+.log-row:hover{background:rgba(0,229,160,0.025);}
+.log-row:last-child{border-bottom:none;}
+.log-time{color:var(--text3);font-size:9px;}.log-ip{color:var(--text2);}.log-user{color:var(--text2);}
+.tag-granted{background:rgba(0,229,160,0.11);color:var(--accent);font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;display:inline-block;}
+.tag-denied{background:rgba(255,77,77,0.11);color:var(--red);font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;display:inline-block;}
+.tag-suspicious{background:rgba(255,179,68,0.11);color:var(--amber);font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;display:inline-block;}
+.tbl-header{display:grid;gap:8px;font-size:9px;font-family:var(--mono);color:var(--text3);letter-spacing:1.5px;padding-bottom:8px;border-bottom:1px solid var(--border);text-transform:uppercase;}
+.tbl-row{display:grid;gap:8px;font-size:11px;font-family:var(--mono);padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.03);align-items:center;transition:background 0.15s;}
+.tbl-row:hover{background:rgba(255,255,255,0.015);}
+.tbl-row:last-child{border-bottom:none;}
+.tag-temp{background:rgba(0,180,216,0.11);color:var(--blue);font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;display:inline-block;}
+.tag-perm{background:rgba(255,77,77,0.11);color:var(--red);font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;display:inline-block;}
+.tag-flagged{background:rgba(255,77,77,0.11);color:var(--red);font-size:9px;padding:2px 8px;border-radius:4px;font-weight:700;font-family:var(--mono);display:inline-block;}
+.tag-warning{background:rgba(255,179,68,0.11);color:var(--amber);font-size:9px;padding:2px 8px;border-radius:4px;font-weight:700;font-family:var(--mono);display:inline-block;}
+.tag-normal{background:rgba(0,229,160,0.11);color:var(--accent);font-size:9px;padding:2px 8px;border-radius:4px;font-weight:700;font-family:var(--mono);display:inline-block;}
+.list-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:8px;}
+.input-row{display:flex;gap:8px;}
+.mini-input{padding:7px 12px;background:var(--bg3);border:1px solid var(--border2);border-radius:7px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;width:175px;transition:border-color 0.2s;}
+.mini-input:focus{border-color:var(--accent);}
+.mini-btn{padding:7px 14px;border-radius:7px;font-family:var(--mono);font-size:10px;font-weight:700;cursor:pointer;letter-spacing:0.5px;border:1px solid;transition:opacity 0.2s,transform 0.1s;}
+.mini-btn:hover{opacity:0.8;}.mini-btn:active{transform:scale(0.97);}
+.btn-red{background:rgba(255,77,77,0.1);color:var(--red);border-color:rgba(255,77,77,0.3);}
+.btn-green{background:rgba(0,229,160,0.1);color:var(--accent);border-color:rgba(0,229,160,0.3);}
+.btn-amber{background:rgba(255,179,68,0.1);color:var(--amber);border-color:rgba(255,179,68,0.3);font-size:9px;padding:3px 9px;}
+.ai-row{display:flex;justify-content:space-between;align-items:flex-start;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04);gap:12px;}
+.ai-row:last-child{border-bottom:none;}
+.ai-desc{font-size:12px;color:var(--text);margin-bottom:3px;}
+.ai-sub{font-size:10px;font-family:var(--mono);color:var(--text2);}
+.online-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);display:inline-block;margin-right:5px;box-shadow:0 0 5px var(--accent);animation:tbpulse 2s infinite;}
+.offline-dot{width:6px;height:6px;border-radius:50%;background:var(--text3);display:inline-block;margin-right:5px;}
+
+/* ── CHAT TAB ── */
+.chat-container{display:flex;flex-direction:column;height:calc(100vh - 280px);min-height:480px;}
+.chat-messages{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:4px 0 16px;scrollbar-width:none;}
+.chat-messages::-webkit-scrollbar{display:none;}
+.chat-msg{display:flex;flex-direction:column;gap:4px;max-width:88%;}
+.chat-msg.user{align-self:flex-end;align-items:flex-end;}
+.chat-msg.assistant{align-self:flex-start;align-items:flex-start;}
+.chat-msg.system-alert{align-self:center;align-items:center;max-width:100%;}
+.msg-bubble{padding:10px 14px;border-radius:12px;font-size:12px;line-height:1.6;font-family:var(--mono);white-space:pre-wrap;word-break:break-word;}
+.chat-msg.user .msg-bubble{background:rgba(0,229,160,0.1);border:1px solid rgba(0,229,160,0.25);color:var(--text);border-bottom-right-radius:3px;}
+.chat-msg.assistant .msg-bubble{background:var(--bg3);border:1px solid var(--border);color:var(--text);border-bottom-left-radius:3px;}
+.chat-msg.system-alert .msg-bubble{background:rgba(255,77,77,0.08);border:1px solid rgba(255,77,77,0.25);color:var(--red);font-size:11px;border-radius:8px;}
+.msg-time{font-size:9px;font-family:var(--mono);color:var(--text3);letter-spacing:0.5px;}
+.msg-label{font-size:9px;font-family:var(--mono);letter-spacing:1px;font-weight:700;}
+.chat-msg.user .msg-label{color:var(--accent);}
+.chat-msg.assistant .msg-label{color:var(--blue);}
+.chat-msg.system-alert .msg-label{color:var(--red);}
+.chat-input-row{display:flex;gap:8px;padding-top:12px;border-top:1px solid var(--border);}
+.chat-input{flex:1;padding:11px 14px;background:var(--bg3);border:1px solid var(--border2);border-radius:10px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;transition:border-color 0.2s;resize:none;height:44px;}
+.chat-input:focus{border-color:var(--accent);}
+.chat-send{padding:0 18px;background:rgba(0,229,160,0.1);border:1px solid rgba(0,229,160,0.3);border-radius:10px;color:var(--accent);font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;transition:background 0.2s;white-space:nowrap;letter-spacing:1px;}
+.chat-send:hover{background:rgba(0,229,160,0.18);}
+.chat-send:disabled{opacity:0.4;cursor:not-allowed;}
+.chat-hint{font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:7px;line-height:1.8;}
+.chat-hint span{color:var(--text2);background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:1px 6px;margin:0 2px;cursor:pointer;transition:border-color 0.2s;}
+.chat-hint span:hover{border-color:var(--accent);color:var(--accent);}
+.typing-indicator{display:flex;align-items:center;gap:5px;padding:8px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:12px;border-bottom-left-radius:3px;width:fit-content;}
+.typing-dot{width:5px;height:5px;border-radius:50%;background:var(--text3);animation:typingBounce 1.2s infinite;}
+.typing-dot:nth-child(2){animation-delay:0.2s;}
+.typing-dot:nth-child(3){animation-delay:0.4s;}
+@keyframes typingBounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-5px)}}
+
+/* MODAL */
+.modal-overlay{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity 0.25s ease;}
+.modal-overlay.open{opacity:1;pointer-events:all;}
+.modal-backdrop{position:absolute;inset:0;background:rgba(2,7,15,0.75);backdrop-filter:blur(4px);}
+.modal-box{position:relative;z-index:1;background:var(--bg2);border:1px solid var(--border2);border-radius:16px;padding:2rem;width:100%;max-width:360px;transform:translateY(16px) scale(0.97);transition:transform 0.28s cubic-bezier(0.22,1,0.36,1);box-shadow:0 24px 64px rgba(0,0,0,0.5);}
+.modal-overlay.open .modal-box{transform:translateY(0) scale(1);}
+.modal-icon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;margin-bottom:1rem;font-size:20px;}
+.modal-icon.danger{background:rgba(255,77,77,0.1);border:1px solid rgba(255,77,77,0.25);}
+.modal-icon.warn{background:rgba(255,179,68,0.1);border:1px solid rgba(255,179,68,0.25);}
+.modal-title{font-size:17px;font-weight:600;margin-bottom:6px;}
+.modal-msg{font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:1.5rem;}
+.modal-msg strong{color:var(--text);}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;}
+.modal-cancel{padding:9px 18px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text2);font-family:var(--mono);font-size:11px;cursor:pointer;}
+.modal-confirm{padding:9px 18px;border:none;border-radius:8px;font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;letter-spacing:0.5px;}
+.modal-confirm.danger{background:var(--red);color:#fff;}
+.modal-confirm.amber{background:var(--amber);color:var(--bg);}
+#toast-container{position:fixed;bottom:24px;right:24px;z-index:300;display:flex;flex-direction:column;gap:8px;pointer-events:none;}
+.toast{display:flex;align-items:center;gap:10px;padding:10px 16px;border-radius:10px;border:1px solid;font-family:var(--mono);font-size:11px;backdrop-filter:blur(12px);animation:toastIn 0.3s cubic-bezier(0.22,1,0.36,1);min-width:220px;max-width:320px;}
+.toast.leaving{animation:toastOut 0.3s ease forwards;}
+@keyframes toastIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+@keyframes toastOut{to{opacity:0;transform:translateX(20px)}}
+.toast-dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex-shrink:0;}
+.toast.success{color:var(--accent);border-color:rgba(0,229,160,0.3);background:rgba(4,12,20,0.92);}
+.toast.error{color:var(--red);border-color:rgba(255,77,77,0.3);background:rgba(4,12,20,0.92);}
+.toast.info{color:var(--text2);border-color:rgba(122,155,184,0.3);background:rgba(4,12,20,0.92);}
+.toast.warning{color:var(--amber);border-color:rgba(255,179,68,0.3);background:rgba(4,12,20,0.92);}
+::-webkit-scrollbar{display:none;}
+</style>
+</head>
+<body>
+
+<!-- MODALS -->
+<div class="modal-overlay" id="modal-logout">
+  <div class="modal-backdrop" onclick="closeModal('modal-logout')"></div>
+  <div class="modal-box">
+    <div class="modal-icon danger">🔓</div>
+    <div class="modal-title">End Session?</div>
+    <div class="modal-msg">You are about to sign out of <strong>NETAD Security System</strong>. Your session will be terminated.</div>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeModal('modal-logout')">CANCEL</button>
+      <button class="modal-confirm danger" onclick="confirmLogout()">SIGN OUT</button>
+    </div>
+  </div>
+</div>
+<div class="modal-overlay" id="modal-confirm">
+  <div class="modal-backdrop" onclick="closeModal('modal-confirm')"></div>
+  <div class="modal-box">
+    <div class="modal-icon" id="confirm-icon">⚠️</div>
+    <div class="modal-title" id="confirm-title">Confirm Action</div>
+    <div class="modal-msg" id="confirm-msg"></div>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeModal('modal-confirm')">CANCEL</button>
+      <button class="modal-confirm" id="confirm-btn" onclick="runConfirm()">CONFIRM</button>
+    </div>
+  </div>
+</div>
+<div id="toast-container"></div>
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="topbar-left">
+    <div class="tb-logo">NETAD</div>
+    <div class="tb-divider"></div>
+    <div class="tb-session">Signed in as <span>{{ user }}</span></div>
+  </div>
+  <div class="topbar-right">
+    <div class="tb-time" id="tb-time"></div>
+    <div class="tb-online"><div class="tb-dot"></div>SYSTEM ONLINE</div>
+    <button class="logout-btn" onclick="openModal('modal-logout')">SIGN OUT</button>
+  </div>
+</div>
+
+<div class="dash-body">
+  <div class="welcome-banner">
+    <div class="wb-left">
+      <div class="wb-icon">🛡️</div>
+      <div>
+        <div class="wb-title">Welcome back, {{ user }}</div>
+        <div class="wb-sub" id="wb-time">Loading session info...</div>
+      </div>
+    </div>
+    <div class="wb-badge">SESSION ACTIVE</div>
+  </div>
+
+  <div class="metrics">
+    <div class="metric-card"><div class="metric-label">Layers Active</div><div class="metric-value mv-green" id="m-layers">—</div><div class="metric-delta">Consensus nodes</div></div>
+    <div class="metric-card"><div class="metric-label">Attempts Today</div><div class="metric-value mv-white" id="m-attempts">—</div><div class="metric-delta">Login attempts</div></div>
+    <div class="metric-card"><div class="metric-label">Blocked IPs</div><div class="metric-value mv-red" id="m-blocked">—</div><div class="metric-delta">Active blocks</div></div>
+    <div class="metric-card"><div class="metric-label">AI Alerts</div><div class="metric-value mv-amber" id="m-ai">—</div><div class="metric-delta">Flagged events</div></div>
+    <div class="metric-card"><div class="metric-label">Online Sessions</div><div class="metric-value mv-blue" id="m-online">—</div><div class="metric-delta">Right now</div></div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('overview',this)">OVERVIEW</div>
+    <div class="tab" onclick="switchTab('blacklist',this)">BLACKLIST</div>
+    <div class="tab" onclick="switchTab('whitelist',this)">WHITELIST</div>
+    <div class="tab" onclick="switchTab('ai',this)">AI LOG</div>
+    <div class="tab" onclick="switchTab('sessions',this)">SESSIONS</div>
+    <div class="tab" onclick="switchTab('chat',this)">🤖 GUARD AI</div>
+  </div>
+
+  <!-- OVERVIEW -->
+  <div id="tab-overview" class="tab-section active">
+    <div class="grid-2">
+      <div class="panel">
+        <div class="panel-title">Security Layers <span class="panel-badge" id="layer-badge">CHECKING...</span></div>
+        <div class="layer-row"><div class="layer-left"><div class="layer-icon">🔑</div><div><div class="layer-name">Password Verification</div><div class="layer-desc">bcrypt hash comparison</div></div></div><span class="tag-loading" id="st-password">···</span></div>
+        <div class="layer-row"><div class="layer-left"><div class="layer-icon">⏱</div><div><div class="layer-name">Request Timestamp</div><div class="layer-desc">30-second expiry window</div></div></div><span class="tag-loading" id="st-timestamp">···</span></div>
+        <div class="layer-row"><div class="layer-left"><div class="layer-icon">🌐</div><div><div class="layer-name">IP Access Control</div><div class="layer-desc">Whitelist enforcement</div></div></div><span class="tag-loading" id="st-ip_whitelist">···</span></div>
+        <div class="layer-row"><div class="layer-left"><div class="layer-icon">✍️</div><div><div class="layer-name">Digital Signature</div><div class="layer-desc">RSA-PSS verification</div></div></div><span class="tag-loading" id="st-digital_sig">···</span></div>
+        <div class="layer-row"><div class="layer-left"><div class="layer-icon">🎟</div><div><div class="layer-name">Session Management</div><div class="layer-desc">One-time token (atomic)</div></div></div><span class="tag-loading" id="st-session_token">···</span></div>
+        <div class="layer-row"><div class="layer-left"><div class="layer-icon">🚦</div><div><div class="layer-name">Rate Limiting</div><div class="layer-desc">5 attempts / hour max</div></div></div><span class="tag-loading" id="st-rate_limit">···</span></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Camera Feeds <span class="panel-badge" id="cam-badge">LOCKED</span></div>
+        <div class="cam-feed"><div class="cam-inner"><div class="cam-dot" id="cam1-dot"></div><div class="cam-label" id="cam1-label">CAM 1 · LOCKED</div></div></div>
+        <div class="cam-feed"><div class="cam-inner"><div class="cam-dot" id="cam2-dot"></div><div class="cam-label" id="cam2-label">CAM 2 · LOCKED</div></div></div>
+        <div style="font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:8px;text-align:center;">Unlocks when all 6/6 nodes agree</div>
+      </div>
+    </div>
+    <div class="panel grid-full">
+      <div class="panel-title">Access Log <span class="panel-badge">LIVE</span></div>
+      <div class="log-header"><span>TIME</span><span>IP ADDRESS</span><span>USER</span><span>STATUS</span></div>
+      <div id="log-rows"><div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- BLACKLIST -->
+  <div id="tab-blacklist" class="tab-section">
+    <div class="panel">
+      <div class="list-header">
+        <div class="panel-title" style="margin:0;">Blacklist Manager <span class="panel-badge" id="bl-count-badge">—</span></div>
+        <div class="input-row">
+          <input class="mini-input" id="bl-input" placeholder="192.168.x.x"/>
+          <button class="mini-btn btn-red" onclick="addBl()">+ BLOCK IP</button>
+        </div>
+      </div>
+      <div class="tbl-header" style="grid-template-columns:1fr 90px 130px 90px;"><span>IP ADDRESS</span><span>TYPE</span><span>EXPIRES</span><span>ACTION</span></div>
+      <div id="bl-rows"><div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- WHITELIST -->
+  <div id="tab-whitelist" class="tab-section">
+    <div class="panel">
+      <div class="list-header">
+        <div class="panel-title" style="margin:0;">Whitelist Manager <span class="panel-badge" id="wl-count-badge">—</span></div>
+        <div class="input-row">
+          <input class="mini-input" id="wl-input" placeholder="192.168.x.x"/>
+          <input class="mini-input" id="wl-label" placeholder="Device label"/>
+          <button class="mini-btn btn-green" onclick="addWl()">+ ADD IP</button>
+        </div>
+      </div>
+      <div class="tbl-header" style="grid-template-columns:1fr 1fr 80px;"><span>IP ADDRESS</span><span>LABEL</span><span>ACTION</span></div>
+      <div id="wl-rows"><div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- AI LOG -->
+  <div id="tab-ai" class="tab-section">
+    <div class="panel">
+      <div class="panel-title">AI Anomaly Log <span class="panel-badge">ISOLATION FOREST</span></div>
+      <div id="ai-rows"><div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- SESSIONS -->
+  <div id="tab-sessions" class="tab-section">
+    <div class="panel">
+      <div class="panel-title">Active Sessions <span class="panel-badge" id="sess-badge">—</span></div>
+      <div class="tbl-header" style="grid-template-columns:1fr 1fr 80px 120px 110px;"><span>USER</span><span>IP</span><span>ROLE</span><span>LAST SEEN</span><span>STATUS</span></div>
+      <div id="sess-rows"><div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- GUARD AI CHAT -->
+  <div id="tab-chat" class="tab-section">
+    <div class="panel" style="height:calc(100vh - 260px);display:flex;flex-direction:column;">
+      <div class="panel-title">
+        NETAD Guard AI
+        <span class="panel-badge" style="color:var(--accent);border-color:rgba(0,229,160,0.3);">GROQ · LLAMA3-70B</span>
+      </div>
+      <div class="chat-messages" id="chat-messages">
+        <div class="chat-msg assistant">
+          <span class="msg-label">NETAD GUARD</span>
+          <div class="msg-bubble">Hello. I'm NETAD Guard, your AI security officer. I have live access to your system — login logs, node status, blacklist, whitelist, and active sessions.\n\nYou can ask me anything or give me commands like:\n• "Block 192.168.1.9"\n• "Who's currently online?"\n• "Show recent suspicious activity"\n• "Forgive 192.168.1.9"\n• "Kick kevin's session"</div>
+          <span class="msg-time">System initialized</span>
+        </div>
+      </div>
+      <div>
+        <div class="chat-input-row">
+          <input class="chat-input" id="chat-input" placeholder="Ask the guard or give a command..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}"/>
+          <button class="chat-send" id="chat-send" onclick="sendChat()">SEND →</button>
+        </div>
+        <div class="chat-hint">
+          Quick commands:
+          <span onclick="setChatInput('Show recent suspicious activity')">suspicious activity</span>
+          <span onclick="setChatInput('Who is currently online?')">who\'s online</span>
+          <span onclick="setChatInput('Show current node status')">node status</span>
+          <span onclick="setChatInput('Show blacklisted IPs')">blacklist</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── CLOCK ──
+function updateClock(){
+  const now=new Date();
+  document.getElementById('tb-time').textContent=now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+  document.getElementById('wb-time').textContent=`Session · ${now.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})} at ${now.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true})}`;
+}
+updateClock();setInterval(updateClock,1000);
+
+// ── SOCKET.IO ──
+const socket=io();
+socket.on('login_attempt',d=>{
+  loadLogs();loadMetrics();
+  showToast(`Login attempt: ${d.username} from ${d.ip} — ${d.result}`, d.result==='GRANTED'?'success':d.result==='SUSPICIOUS'?'warning':'error');
+});
+socket.on('ai_alert',d=>{
+  loadAiLogs();
+  showToast(`🚨 AI Alert: ${d.message}`,'warning',5000);
+});
+socket.on('node_status',d=>{updateNodeStatus(d.nodes);});
+socket.on('session_kicked',d=>{loadSessions();showToast(`${d.username} kicked from system`,'warning');});
+socket.on('guard_action',d=>{
+  showToast(`Guard executed: ${d.action} on ${d.ip||d.username}`,'info');
+  loadBlacklist();loadWhitelist();
+});
+socket.on('chat_message',d=>{
+  if(d.role==='system'||d.role==='assistant') appendChatMsg(d.role==='system'?'system-alert':'assistant', d.message);
+});
+
+// ── MODAL ──
+function openModal(id){document.getElementById(id).classList.add('open');}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.modal-overlay.open').forEach(m=>m.classList.remove('open'));});
+function confirmLogout(){closeModal('modal-logout');showToast('Session terminated. Redirecting...','info');setTimeout(()=>{document.body.classList.add('leaving');setTimeout(()=>{window.location.href='/logout';},300);},900);}
+let confirmCallback=null;
+function confirm2(opts){
+  document.getElementById('confirm-icon').className='modal-icon '+(opts.iconClass||'warn');
+  document.getElementById('confirm-icon').textContent=opts.icon||'⚠️';
+  document.getElementById('confirm-title').textContent=opts.title||'Confirm';
+  document.getElementById('confirm-msg').innerHTML=opts.msg||'';
+  const btn=document.getElementById('confirm-btn');
+  btn.textContent=opts.btnLabel||'CONFIRM';btn.className='modal-confirm '+(opts.btnClass||'amber');
+  confirmCallback=opts.onConfirm||null;openModal('modal-confirm');
+}
+function runConfirm(){closeModal('modal-confirm');if(confirmCallback)confirmCallback();confirmCallback=null;}
+
+// ── TOAST ──
+function showToast(msg,type='info',duration=3200){
+  const tc=document.getElementById('toast-container');
+  const el=document.createElement('div');el.className=`toast ${type}`;
+  el.innerHTML=`<span class="toast-dot"></span>${msg}`;
+  tc.appendChild(el);
+  setTimeout(()=>{el.classList.add('leaving');setTimeout(()=>el.remove(),300);},duration);
+}
+
+// ── TABS ──
+function switchTab(name,el){
+  document.querySelectorAll('.tab-section').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');el.classList.add('active');
+  if(name==='blacklist')loadBlacklist();
+  if(name==='whitelist')loadWhitelist();
+  if(name==='ai')loadAiLogs();
+  if(name==='sessions')loadSessions();
+  if(name==='chat')loadChatHistory();
+}
+
+// ── NODE STATUS ──
+function updateNodeStatus(nodes){
+  let alive=0;
+  nodes.forEach(n=>{
+    const el=document.getElementById('st-'+n.name);
+    if(!el)return;
+    if(n.alive){el.textContent='ACTIVE';el.className='tag-alive';alive++;}
+    else{el.textContent='OFFLINE';el.className='tag-dead';}
+  });
+  document.getElementById('m-layers').textContent=`${alive}/6`;
+  document.getElementById('layer-badge').textContent=`${alive}/6 ACTIVE`;
+  // Camera feed: unlock if all 6 alive
+  const allAlive=alive===6;
+  document.getElementById('cam-badge').textContent=allAlive?'2 LIVE':'LOCKED';
+  document.getElementById('cam1-label').textContent=allAlive?'CAM 1 · LIVE':'CAM 1 · LOCKED';
+  document.getElementById('cam2-label').textContent=allAlive?'CAM 2 · LIVE':'CAM 2 · LOCKED';
+  document.getElementById('cam1-dot').style.background=allAlive?'var(--accent)':'var(--red)';
+  document.getElementById('cam2-dot').style.background=allAlive?'var(--accent)':'var(--red)';
+}
+async function fetchLayerStatus(){
+  try{
+    const res=await fetch('/api/node-status');const data=await res.json();
+    let alive=0;
+    const nodeMap={'password':1,'timestamp':2,'ip_whitelist':3,'digital_sig':4,'session_token':5,'rate_limit':6};
+    for(const [key,up] of Object.entries(data)){
+      const el=document.getElementById('st-'+key);if(!el)continue;
+      if(up){el.textContent='ACTIVE';el.className='tag-alive';alive++;}
+      else{el.textContent='OFFLINE';el.className='tag-dead';}
+    }
+    const total=Object.keys(data).length;
+    document.getElementById('m-layers').textContent=`${alive}/${total}`;
+    document.getElementById('layer-badge').textContent=`${alive}/${total} ACTIVE`;
+    const allAlive=alive===total&&total===6;
+    document.getElementById('cam-badge').textContent=allAlive?'2 LIVE':'LOCKED';
+    document.getElementById('cam1-label').textContent=allAlive?'CAM 1 · LIVE':'CAM 1 · LOCKED';
+    document.getElementById('cam2-label').textContent=allAlive?'CAM 2 · LIVE':'CAM 2 · LOCKED';
+    document.getElementById('cam1-dot').style.background=allAlive?'var(--accent)':'var(--red)';
+    document.getElementById('cam2-dot').style.background=allAlive?'var(--accent)':'var(--red)';
+  }catch(e){['password','timestamp','ip_whitelist','digital_sig','session_token','rate_limit'].forEach(k=>{const el=document.getElementById('st-'+k);if(el){el.textContent='OFFLINE';el.className='tag-dead';}});}
+}
+fetchLayerStatus();setInterval(fetchLayerStatus,8000);
+
+// ── METRICS ──
+async function loadMetrics(){
+  try{
+    const [logs,bl,ai,sess]=await Promise.all([fetch('/api/logs').then(r=>r.json()),fetch('/api/blacklist').then(r=>r.json()),fetch('/api/ai-logs').then(r=>r.json()),fetch('/api/sessions').then(r=>r.json())]);
+    document.getElementById('m-attempts').textContent=logs.length;
+    document.getElementById('m-blocked').textContent=bl.length;
+    document.getElementById('m-ai').textContent=ai.filter(a=>a.flagged).length;
+    document.getElementById('m-online').textContent=sess.filter(s=>s.online).length;
+  }catch(e){}
+}
+loadMetrics();
+
+// ── LOGS ──
+function fmtTs(ts){if(!ts)return'—';try{return new Date(ts).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});}catch{return ts.substring(11,19)||'—';}}
+async function loadLogs(){
+  try{
+    const logs=await fetch('/api/logs').then(r=>r.json());
+    const c=document.getElementById('log-rows');c.innerHTML='';
+    if(!logs.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No login attempts yet</div>';return;}
+    logs.slice(0,20).forEach(l=>{
+      const div=document.createElement('div');div.className='log-row';
+      const tag=l.result==='GRANTED'?'tag-granted':l.result==='SUSPICIOUS'?'tag-suspicious':'tag-denied';
+      div.innerHTML=`<span class="log-time">${fmtTs(l.timestamp)}</span><span class="log-ip">${l.ip||'—'}</span><span class="log-user">${l.username||'—'}</span><span class="${tag}">${l.result}</span>`;
+      c.appendChild(div);
+    });
+  }catch(e){document.getElementById('log-rows').innerHTML='<div style="color:var(--red);font-family:var(--mono);font-size:11px;padding:12px 0;">Could not load logs</div>';}
+}
+loadLogs();
+
+// ── BLACKLIST (real API) ──
+async function loadBlacklist(){
+  try{
+    const data=await fetch('/api/blacklist').then(r=>r.json());
+    const c=document.getElementById('bl-rows');c.innerHTML='';
+    document.getElementById('bl-count-badge').textContent=`${data.length} BLOCKED`;
+    document.getElementById('m-blocked').textContent=data.length;
+    if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No blocked IPs</div>';return;}
+    data.forEach(item=>{
+      const div=document.createElement('div');div.className='tbl-row';div.style.gridTemplateColumns='1fr 90px 130px 90px';
+      const exp=item.type==='temporary'&&item.blocked_until?new Date(item.blocked_until).toLocaleTimeString():'Permanent';
+      div.innerHTML=`<span style="color:var(--text)">${item.ip}</span><span class="${item.type==='temporary'?'tag-temp':'tag-perm'}">${item.type.toUpperCase()}</span><span style="color:var(--text2);font-size:10px;">${exp}</span><button class="mini-btn btn-amber" onclick="doForgive('${item.ip}')">FORGIVE</button>`;
+      c.appendChild(div);
+    });
+  }catch(e){document.getElementById('bl-rows').innerHTML='<div style="color:var(--red);font-family:var(--mono);font-size:11px;padding:12px 0;">Could not load blacklist</div>';}
+}
+function doForgive(ip){
+  confirm2({title:'Forgive IP?',msg:`Remove <strong>${ip}</strong> from the blacklist?`,icon:'🔓',iconClass:'warn',btnLabel:'FORGIVE',btnClass:'amber',
+    onConfirm:async()=>{await fetch('/api/blacklist/forgive',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip})});loadBlacklist();loadMetrics();showToast(`${ip} removed from blacklist`,'warning');}
+  });
+}
+async function addBl(){
+  const v=document.getElementById('bl-input').value.trim();
+  if(!v){showToast('Enter an IP address','error');return;}
+  await fetch('/api/blacklist/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:v,type:'temporary'})});
+  document.getElementById('bl-input').value='';loadBlacklist();loadMetrics();showToast(`${v} blocked`,'error');
+}
+
+// ── WHITELIST (real API) ──
+async function loadWhitelist(){
+  try{
+    const data=await fetch('/api/whitelist').then(r=>r.json());
+    const c=document.getElementById('wl-rows');c.innerHTML='';
+    document.getElementById('wl-count-badge').textContent=`${data.length} TRUSTED`;
+    if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No whitelisted IPs</div>';return;}
+    data.forEach(item=>{
+      const div=document.createElement('div');div.className='tbl-row';div.style.gridTemplateColumns='1fr 1fr 80px';
+      div.innerHTML=`<span style="color:var(--text)">${item.ip}</span><span style="color:var(--text2)">${item.label||'—'}</span><button class="mini-btn btn-red" onclick="doRemoveWl('${item.ip}')">REMOVE</button>`;
+      c.appendChild(div);
+    });
+  }catch(e){document.getElementById('wl-rows').innerHTML='<div style="color:var(--red);font-family:var(--mono);font-size:11px;padding:12px 0;">Could not load whitelist</div>';}
+}
+function doRemoveWl(ip){
+  confirm2({title:'Remove from Whitelist?',msg:`Remove <strong>${ip}</strong> from trusted IPs?`,icon:'⚠️',iconClass:'warn',btnLabel:'REMOVE',btnClass:'danger',
+    onConfirm:async()=>{await fetch('/api/whitelist/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip})});loadWhitelist();showToast(`${ip} removed from whitelist`,'warning');}
+  });
+}
+async function addWl(){
+  const ip=document.getElementById('wl-input').value.trim();
+  const label=document.getElementById('wl-label').value.trim()||'New device';
+  if(!ip){showToast('Enter an IP address','error');return;}
+  await fetch('/api/whitelist/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip,label})});
+  document.getElementById('wl-input').value='';document.getElementById('wl-label').value='';
+  loadWhitelist();showToast(`${ip} added to whitelist`,'success');
+}
+
+// ── AI LOGS (real API) ──
+async function loadAiLogs(){
+  try{
+    const data=await fetch('/api/ai-logs').then(r=>r.json());
+    const c=document.getElementById('ai-rows');c.innerHTML='';
+    if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No AI anomaly events yet — system is learning</div>';return;}
+    data.forEach(l=>{
+      const div=document.createElement('div');div.className='ai-row';
+      const tag=l.flagged?'tag-flagged':'tag-normal';
+      const label=l.flagged?'FLAGGED':'NORMAL';
+      div.innerHTML=`<div><div class="ai-desc">${l.description||'Anomaly detected'}</div><div class="ai-sub">${l.ip||'—'} · ${l.username||'—'} · score: ${parseFloat(l.score||0).toFixed(3)} · ${fmtTs(l.timestamp)}</div></div><span class="${tag}">${label}</span>`;
+      c.appendChild(div);
+    });
+    document.getElementById('m-ai').textContent=data.filter(a=>a.flagged).length;
+  }catch(e){document.getElementById('ai-rows').innerHTML='<div style="color:var(--red);font-family:var(--mono);font-size:11px;padding:12px 0;">Could not load AI logs</div>';}
+}
+
+// ── SESSIONS (real API) ──
+async function loadSessions(){
+  try{
+    const data=await fetch('/api/sessions').then(r=>r.json());
+    const c=document.getElementById('sess-rows');c.innerHTML='';
+    const online=data.filter(s=>s.online).length;
+    document.getElementById('sess-badge').textContent=`${online} ONLINE`;
+    document.getElementById('m-online').textContent=online;
+    if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No active sessions</div>';return;}
+    data.forEach(s=>{
+      const div=document.createElement('div');div.className='tbl-row';div.style.gridTemplateColumns='1fr 1fr 80px 120px 110px';
+      div.innerHTML=`<span style="color:var(--text);font-weight:500;">${s.username||'—'}</span><span style="color:var(--text2)">${s.ip||'—'}</span><span style="color:var(--text2)">${s.role||'—'}</span><span style="color:var(--text3);font-size:10px;">${fmtTs(s.last_seen)}</span><span style="display:flex;align-items:center;gap:6px;"><span class="${s.online?'online-dot':'offline-dot'}"></span><span style="font-size:9px;color:${s.online?'var(--accent)':'var(--text3)'};">${s.online?'ONLINE':'OFFLINE'}</span>${s.online?`<button class="mini-btn btn-red" style="font-size:8px;padding:2px 7px;" onclick="doKick('${s.username}')">KICK</button>`:''}</span>`;
+      div.appendChild(document.createTextNode(''));
+      c.appendChild(div);
+    });
+  }catch(e){document.getElementById('sess-rows').innerHTML='<div style="color:var(--red);font-family:var(--mono);font-size:11px;padding:12px 0;">Could not load sessions</div>';}
+}
+function doKick(username){
+  confirm2({title:'Force Sign Out?',msg:`Kick <strong>${username}</strong> from the system?`,icon:'⚡',iconClass:'warn',btnLabel:'KICK USER',btnClass:'danger',
+    onConfirm:async()=>{await fetch('/api/sessions/kick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username})});loadSessions();showToast(`${username} has been kicked`,'warning');}
+  });
+}
+
+// ── GUARD AI CHAT ──
+function setChatInput(text){document.getElementById('chat-input').value=text;document.getElementById('chat-input').focus();}
+function nowTime(){return new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true});}
+
+function appendChatMsg(role,text,time){
+  const c=document.getElementById('chat-messages');
+  const wrapper=document.createElement('div');
+  wrapper.className=`chat-msg ${role==='user'?'user':role==='system-alert'?'system-alert':'assistant'}`;
+  const labels={'user':'YOU','assistant':'NETAD GUARD','system-alert':'⚠ SYSTEM ALERT'};
+  wrapper.innerHTML=`<span class="msg-label">${labels[role]||'GUARD'}</span><div class="msg-bubble">${text.replace(/ACTION:\{.*?\}/s,'').trim()}</div><span class="msg-time">${time||nowTime()}</span>`;
+  c.appendChild(wrapper);
+  c.scrollTop=c.scrollHeight;
+}
+
+function showTyping(){
+  const c=document.getElementById('chat-messages');
+  const el=document.createElement('div');el.id='typing-indicator';el.className='chat-msg assistant';
+  el.innerHTML=`<span class="msg-label">NETAD GUARD</span><div class="typing-indicator"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>`;
+  c.appendChild(el);c.scrollTop=c.scrollHeight;
+}
+function removeTyping(){const el=document.getElementById('typing-indicator');if(el)el.remove();}
+
+async function sendChat(){
+  const input=document.getElementById('chat-input');
+  const msg=input.value.trim();if(!msg)return;
+  const btn=document.getElementById('chat-send');
+  input.value='';btn.disabled=true;
+  appendChatMsg('user',msg);
+  showTyping();
+  try{
+    const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg})});
+    const data=await res.json();
+    removeTyping();
+    if(data.reply)appendChatMsg('assistant',data.reply);
+    // Refresh data if guard took an action
+    if(data.action_result&&data.action_result.executed){
+      loadBlacklist();loadWhitelist();loadSessions();loadMetrics();
+    }
+  }catch(e){
+    removeTyping();
+    appendChatMsg('assistant','Connection error. Make sure Flask is running and GROQ_API_KEY is set in your .env file.');
+  }
+  btn.disabled=false;
+}
+
+async function loadChatHistory(){
+  try{
+    const data=await fetch('/api/chat/history').then(r=>r.json());
+    const c=document.getElementById('chat-messages');
+    // Only load if chat is empty (first load)
+    if(c.children.length>1)return;
+    data.forEach(m=>{
+      if(m.role==='user')appendChatMsg('user',m.message,fmtTs(m.timestamp));
+      else if(m.role==='assistant')appendChatMsg('assistant',m.message,fmtTs(m.timestamp));
+      else if(m.role==='system')appendChatMsg('system-alert',m.message,fmtTs(m.timestamp));
+    });
+  }catch(e){}
+}
+
+// ── INIT ──
+loadLogs();loadMetrics();
+setTimeout(()=>showToast('Welcome back, {{ user }} · Session started','success'),500);
+// Session heartbeat
+setInterval(()=>{fetch('/api/session/heartbeat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'{{ user }}'})});},30000);
+</script>
+</body>
+</html>

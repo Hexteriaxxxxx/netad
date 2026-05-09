@@ -1,0 +1,12 @@
+flask
+flask-socketio
+cryptography
+scikit-learn
+numpy
+joblib
+psycopg2-binary
+python-dotenv
+eventlet
+bcrypt
+groq
+opencv-python-headless
