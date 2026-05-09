@@ -512,7 +512,7 @@ def api_chat():
         from groq import Groq
         client = Groq(api_key=groq_api_key)
         response = client.chat.completions.create(
-            model='llama3-70b-8192', messages=messages,
+            model='llama-3.3-70b-versatile', messages=messages,
             max_tokens=512, temperature=0.4,
         )
         reply = response.choices[0].message.content.strip()
