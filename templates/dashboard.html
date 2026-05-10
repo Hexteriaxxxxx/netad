@@ -416,7 +416,14 @@ const socket=io();
 socket.on('login_attempt',d=>{loadLogs();loadMetrics();showToast(`Login: ${d.username} from ${d.ip} — ${d.result}`,d.result==='GRANTED'?'success':d.result==='SUSPICIOUS'?'warning':'error');});
 socket.on('ai_alert',d=>{loadAiLogs();showToast(`🚨 AI Alert: ${d.message}`,'warning',5000);});
 socket.on('node_status',d=>{updateNodeStatus(d.nodes);});
-socket.on('session_kicked',d=>{loadSessions();showToast(`${d.username} kicked`,'warning');});
+socket.on('session_kicked',d=>{
+  loadSessions();
+  showToast(`${d.username} session terminated`,'warning');
+  if(d.username==='{{ user }}'){
+    showToast('Your session was terminated by admin','error',3000);
+    setTimeout(()=>{window.location.href='/logout';},2000);
+  }
+});
 socket.on('guard_action',d=>{showToast(`Guard: ${d.action} on ${d.ip||d.username}`,'info');loadBlacklist();loadWhitelist();});
 socket.on('chat_message',d=>{if(d.role==='system'||d.role==='assistant')appendChatMsg(d.role==='system'?'system-alert':'assistant',d.message);});
 socket.on('camera_access',d=>{setCameraState(d.accessible);});
@@ -778,7 +785,16 @@ async function loadChatHistory(){
 // ── INIT ──
 loadLogs();loadMetrics();loadDevices();
 setTimeout(()=>showToast('Welcome back, {{ user }} · Session active','success'),500);
-setInterval(()=>{fetch('/api/session/heartbeat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'{{ user }}'})});},30000);
+setInterval(async()=>{
+  try{
+    const res=await fetch('/api/session/heartbeat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'{{ user }}'})});
+    const data=await res.json();
+    if(data.kicked){
+      showToast('Your session was terminated','error',3000);
+      setTimeout(()=>{window.location.href='/logout';},2000);
+    }
+  }catch(e){}
+},30000);
 </script>
 </body>
 </html>

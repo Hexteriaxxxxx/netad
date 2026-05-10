@@ -452,7 +452,15 @@ def api_sessions_kick():
 
 @app.route('/api/session/heartbeat', methods=['POST'])
 def api_session_heartbeat():
-    update_session_heartbeat(request.get_json().get('username', ''))
+    username = request.get_json().get('username', '')
+    update_session_heartbeat(username)
+    # Check if session was kicked (deleted from DB)
+    active = get_sessions()
+    still_valid = any(s['username'] == username for s in active)
+    if not still_valid:
+        session.clear()
+        set_consensus_state(False)
+        return jsonify({'ok': False, 'kicked': True})
     return jsonify({'ok': True})
 
 @app.route('/api/ai-logs')
