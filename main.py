@@ -460,6 +460,98 @@ def api_ai_logs():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_ai_logs(20)])
 
+# ── GUARD TOOLS (Groq Tool Calling) ──
+GUARD_TOOLS = [
+    {
+        'type': 'function',
+        'function': {
+            'name': 'block_ip',
+            'description': 'Block an IP address and add it to the blacklist',
+            'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string', 'description': 'IP address to block'}}, 'required': ['ip']}
+        }
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'forgive_ip',
+            'description': 'Remove an IP from the blacklist and clear its rate limit history',
+            'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string', 'description': 'IP address to forgive'}}, 'required': ['ip']}
+        }
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'clear_rate_limit',
+            'description': 'Clear failed login attempts for an IP so they can try again',
+            'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string', 'description': 'IP address to clear'}}, 'required': ['ip']}
+        }
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'add_whitelist',
+            'description': 'Add an IP to the whitelist so it can pass Node 3',
+            'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}, 'label': {'type': 'string', 'description': 'Label for this IP'}}, 'required': ['ip']}
+        }
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'remove_whitelist',
+            'description': 'Remove an IP from the whitelist',
+            'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
+        }
+    },
+    {
+        'type': 'function',
+        'function': {
+            'name': 'kick_session',
+            'description': 'Force logout a user and terminate their session',
+            'parameters': {'type': 'object', 'properties': {'username': {'type': 'string', 'description': 'Username to kick'}}, 'required': ['username']}
+        }
+    },
+]
+
+def _run_tool(tool_name: str, args: dict) -> str:
+    """Execute a guard tool and return a result string."""
+    try:
+        if tool_name == 'block_ip':
+            ip = args['ip']
+            add_to_blacklist(ip, 'temporary', 1800)
+            socketio.emit('guard_action', {'action': 'block_ip', 'ip': ip})
+            return f"Blocked {ip} — added to blacklist for 30 minutes."
+        elif tool_name == 'forgive_ip':
+            ip = args['ip']
+            forgive_ip(ip)
+            clear_rate_limit(ip)
+            socketio.emit('guard_action', {'action': 'forgive_ip', 'ip': ip})
+            return f"Forgiven {ip} — removed from blacklist and rate limit cleared."
+        elif tool_name == 'clear_rate_limit':
+            ip = args['ip']
+            clear_rate_limit(ip)
+            socketio.emit('guard_action', {'action': 'clear_rate_limit', 'ip': ip})
+            return f"Rate limit cleared for {ip} — they can now attempt login again."
+        elif tool_name == 'add_whitelist':
+            ip = args['ip']
+            label = args.get('label', 'Guard approved')
+            add_to_whitelist(ip, label)
+            socketio.emit('guard_action', {'action': 'add_whitelist', 'ip': ip})
+            return f"Added {ip} to whitelist as '{label}'."
+        elif tool_name == 'remove_whitelist':
+            ip = args['ip']
+            remove_from_whitelist(ip)
+            socketio.emit('guard_action', {'action': 'remove_whitelist', 'ip': ip})
+            return f"Removed {ip} from whitelist."
+        elif tool_name == 'kick_session':
+            username = args['username']
+            delete_session(username)
+            socketio.emit('session_kicked', {'username': username})
+            return f"Kicked {username} — session terminated."
+        else:
+            return f"Unknown tool: {tool_name}"
+    except Exception as e:
+        return f"Tool error: {e}"
+
 # ── GUARD CHAT ──
 def _get_system_context() -> str:
     try:
@@ -493,37 +585,69 @@ def api_chat():
     if not user_message: return jsonify({'error': 'empty'})
     groq_api_key = os.environ.get('GROQ_API_KEY')
     if not groq_api_key: return jsonify({'reply': 'Groq API key not configured.'})
+
     add_chat_log('user', user_message)
     chat_history = get_chat_logs(20)
-    messages = [{'role': 'system', 'content': (
+
+    system_prompt = (
         "You are NETAD Guard, an AI security officer for the NETAD multi-layer camera security system. "
         "You have real-time access to login logs, AI anomaly alerts, node status, device approvals, blacklist, whitelist, and active sessions. "
         "You speak professionally and concisely. "
-        "When asked to perform an action, you MUST include this JSON block in your reply — do not just describe it, actually include it:\n"
-        "ACTION:{\"action\": \"block_ip\", \"ip\": \"x.x.x.x\"}\n"
-        "Available actions and when to use them:\n"
-        "  block_ip — block an IP address (requires: ip)\n"
-        "  forgive_ip — remove IP from blacklist (requires: ip)\n"
-        "  clear_rate_limit — clear failed login count for an IP so they can try again (requires: ip)\n"
-        "  kick_session — force logout a user (requires: username)\n"
-        "  add_whitelist — add IP to whitelist (requires: ip, label)\n"
-        "  remove_whitelist — remove IP from whitelist (requires: ip)\n"
-        "When a user says 'let X in' or 'clear rate limit for X', use clear_rate_limit with their IP from the logs.\n\n"
+        "When the user asks you to perform a security action, use the provided tools to execute it immediately — do not just describe what you would do. "
+        "After using a tool, confirm what was done in plain language.\n\n"
         + _get_system_context()
-    )}]
+    )
+
+    messages = [{'role': 'system', 'content': system_prompt}]
     for msg in chat_history[-16:]:
         if msg.get('role') == 'system': continue
         messages.append({'role': msg.get('role', 'user'), 'content': msg.get('message', '')})
     messages.append({'role': 'user', 'content': user_message})
+
     try:
         from groq import Groq
         client = Groq(api_key=groq_api_key)
-        response = client.chat.completions.create(model='llama-3.3-70b-versatile', messages=messages, max_tokens=1024, temperature=0.4)
-        reply = response.choices[0].message.content.strip()
-        action_result = _execute_action(reply)
+        executed_actions = []
+
+        # First call — AI may call tools
+        response = client.chat.completions.create(
+            model='llama-3.3-70b-versatile',
+            messages=messages,
+            tools=GUARD_TOOLS,
+            tool_choice='auto',
+            max_tokens=1024,
+            temperature=0.4
+        )
+        msg_obj = response.choices[0].message
+
+        # Handle tool calls if any
+        if msg_obj.tool_calls:
+            messages.append({'role': 'assistant', 'content': msg_obj.content or '', 'tool_calls': [{
+                'id': tc.id, 'type': 'function',
+                'function': {'name': tc.function.name, 'arguments': tc.function.arguments}
+            } for tc in msg_obj.tool_calls]})
+
+            for tc in msg_obj.tool_calls:
+                args = json.loads(tc.function.arguments)
+                result = _run_tool(tc.function.name, args)
+                executed_actions.append({'tool': tc.function.name, 'args': args, 'result': result})
+                messages.append({'role': 'tool', 'tool_call_id': tc.id, 'content': result})
+
+            # Second call — AI summarizes what it did
+            followup = client.chat.completions.create(
+                model='llama-3.3-70b-versatile',
+                messages=messages,
+                max_tokens=512,
+                temperature=0.4
+            )
+            reply = followup.choices[0].message.content.strip()
+        else:
+            reply = msg_obj.content.strip() if msg_obj.content else 'No response.'
+
         add_chat_log('assistant', reply)
         socketio.emit('chat_message', {'role': 'assistant', 'message': reply})
-        return jsonify({'reply': reply, 'action_result': action_result})
+        return jsonify({'reply': reply, 'action_result': executed_actions})
+
     except Exception as e:
         return jsonify({'reply': f'Guard unavailable: {e}'})
 
