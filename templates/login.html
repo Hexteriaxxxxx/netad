@@ -321,6 +321,8 @@ async function registerDevice() {
 
     if (data.error) {
       setStatus('// ' + data.error, 'var(--red)');
+    } else if (data.status === 'approved') {
+      showLoginUI();
     } else {
       showStatusMessage('pending', username);
     }

@@ -42,10 +42,18 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
 .metric-value{font-size:28px;font-weight:600;font-family:var(--mono);}
 .metric-delta{font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:4px;}
 .mv-green{color:var(--accent)}.mv-red{color:var(--red)}.mv-amber{color:var(--amber)}.mv-blue{color:var(--blue)}.mv-white{color:var(--text)}
+.pending-alert{background:rgba(255,179,68,0.07);border:1px solid rgba(255,179,68,0.25);border-radius:10px;padding:10px 14px;margin-bottom:1rem;display:none;align-items:center;justify-content:space-between;gap:12px;}
+.pending-alert.show{display:flex;}
+.pa-left{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:11px;color:var(--amber);}
+.pa-dot{width:7px;height:7px;border-radius:50%;background:var(--amber);animation:tbpulse 1.5s infinite;flex-shrink:0;}
+.pa-btn{padding:5px 14px;background:rgba(255,179,68,0.1);border:1px solid rgba(255,179,68,0.3);border-radius:6px;color:var(--amber);font-family:var(--mono);font-size:10px;cursor:pointer;white-space:nowrap;}
+.pa-btn:hover{background:rgba(255,179,68,0.18);}
 .tabs{display:flex;gap:3px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:4px;margin-bottom:1.5rem;flex-wrap:wrap;}
-.tab{padding:7px 18px;border-radius:7px;font-size:10px;font-family:var(--mono);letter-spacing:1px;cursor:pointer;color:var(--text2);transition:all 0.2s;border:1px solid transparent;user-select:none;}
+.tab{padding:7px 16px;border-radius:7px;font-size:10px;font-family:var(--mono);letter-spacing:1px;cursor:pointer;color:var(--text2);transition:all 0.2s;border:1px solid transparent;user-select:none;position:relative;}
 .tab:hover{color:var(--text);}
 .tab.active{background:var(--bg4);color:var(--accent);border-color:var(--border2);}
+.tab-badge{position:absolute;top:3px;right:3px;width:7px;height:7px;border-radius:50%;background:var(--amber);display:none;}
+.tab-badge.show{display:block;}
 .tab-section{display:none;}
 .tab-section.active{display:block;animation:tabIn 0.25s ease;}
 @keyframes tabIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
@@ -63,11 +71,15 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
 .tag-alive{background:rgba(0,229,160,0.11);color:var(--accent);font-size:9px;padding:2px 8px;border-radius:4px;font-family:var(--mono);font-weight:700;}
 .tag-dead{background:rgba(255,77,77,0.11);color:var(--red);font-size:9px;padding:2px 8px;border-radius:4px;font-family:var(--mono);font-weight:700;}
 .tag-loading{background:rgba(122,155,184,0.1);color:var(--text3);font-size:9px;padding:2px 8px;border-radius:4px;font-family:var(--mono);font-weight:700;}
-.cam-feed{background:var(--bg3);border:1px solid var(--border);border-radius:8px;height:88px;display:flex;align-items:center;justify-content:center;margin-bottom:8px;position:relative;overflow:hidden;}
-.cam-feed::before{content:'';position:absolute;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,229,160,0.018) 2px,rgba(0,229,160,0.018) 4px);}
+.cam-feed{background:var(--bg3);border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:8px;position:relative;}
+.cam-locked{height:88px;display:flex;align-items:center;justify-content:center;}
+.cam-locked::before{content:'';position:absolute;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,229,160,0.018) 2px,rgba(0,229,160,0.018) 4px);}
 .cam-inner{text-align:center;position:relative;z-index:1;}
 .cam-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);margin:0 auto 6px;box-shadow:0 0 10px var(--accent);animation:tbpulse 1.5s infinite;}
 .cam-label{font-size:9px;font-family:var(--mono);color:var(--accent);letter-spacing:1.5px;}
+.cam-img{width:100%;height:180px;object-fit:cover;display:block;}
+.cam-live-badge{position:absolute;top:8px;left:8px;background:rgba(255,77,77,0.85);color:#fff;font-family:var(--mono);font-size:8px;font-weight:700;padding:2px 7px;border-radius:4px;letter-spacing:1px;display:flex;align-items:center;gap:4px;}
+.cam-live-dot{width:5px;height:5px;border-radius:50%;background:#fff;animation:tbpulse 1s infinite;}
 .log-header{display:grid;grid-template-columns:90px 1fr 1fr 85px;gap:8px;font-size:9px;font-family:var(--mono);color:var(--text3);letter-spacing:1.5px;padding-bottom:8px;border-bottom:1px solid var(--border);text-transform:uppercase;}
 .log-row{display:grid;grid-template-columns:90px 1fr 1fr 85px;gap:8px;font-size:11px;font-family:var(--mono);padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.03);align-items:center;transition:background 0.15s;}
 .log-row:hover{background:rgba(0,229,160,0.025);}
@@ -82,26 +94,28 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
 .tbl-row:last-child{border-bottom:none;}
 .tag-temp{background:rgba(0,180,216,0.11);color:var(--blue);font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;display:inline-block;}
 .tag-perm{background:rgba(255,77,77,0.11);color:var(--red);font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;display:inline-block;}
+.tag-pending{background:rgba(255,179,68,0.11);color:var(--amber);font-size:9px;padding:2px 8px;border-radius:4px;font-weight:700;font-family:var(--mono);display:inline-block;}
+.tag-approved{background:rgba(0,229,160,0.11);color:var(--accent);font-size:9px;padding:2px 8px;border-radius:4px;font-weight:700;font-family:var(--mono);display:inline-block;}
+.tag-rejected{background:rgba(255,77,77,0.11);color:var(--red);font-size:9px;padding:2px 8px;border-radius:4px;font-weight:700;font-family:var(--mono);display:inline-block;}
 .tag-flagged{background:rgba(255,77,77,0.11);color:var(--red);font-size:9px;padding:2px 8px;border-radius:4px;font-weight:700;font-family:var(--mono);display:inline-block;}
-.tag-warning{background:rgba(255,179,68,0.11);color:var(--amber);font-size:9px;padding:2px 8px;border-radius:4px;font-weight:700;font-family:var(--mono);display:inline-block;}
 .tag-normal{background:rgba(0,229,160,0.11);color:var(--accent);font-size:9px;padding:2px 8px;border-radius:4px;font-weight:700;font-family:var(--mono);display:inline-block;}
 .list-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:8px;}
-.input-row{display:flex;gap:8px;}
+.input-row{display:flex;gap:8px;flex-wrap:wrap;}
 .mini-input{padding:7px 12px;background:var(--bg3);border:1px solid var(--border2);border-radius:7px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;width:175px;transition:border-color 0.2s;}
 .mini-input:focus{border-color:var(--accent);}
-.mini-btn{padding:7px 14px;border-radius:7px;font-family:var(--mono);font-size:10px;font-weight:700;cursor:pointer;letter-spacing:0.5px;border:1px solid;transition:opacity 0.2s,transform 0.1s;}
+.mini-btn{padding:7px 14px;border-radius:7px;font-family:var(--mono);font-size:10px;font-weight:700;cursor:pointer;letter-spacing:0.5px;border:1px solid;transition:opacity 0.2s,transform 0.1s;white-space:nowrap;}
 .mini-btn:hover{opacity:0.8;}.mini-btn:active{transform:scale(0.97);}
 .btn-red{background:rgba(255,77,77,0.1);color:var(--red);border-color:rgba(255,77,77,0.3);}
 .btn-green{background:rgba(0,229,160,0.1);color:var(--accent);border-color:rgba(0,229,160,0.3);}
-.btn-amber{background:rgba(255,179,68,0.1);color:var(--amber);border-color:rgba(255,179,68,0.3);font-size:9px;padding:3px 9px;}
+.btn-amber{background:rgba(255,179,68,0.1);color:var(--amber);border-color:rgba(255,179,68,0.3);}
+.btn-xs{font-size:9px;padding:3px 9px;}
 .ai-row{display:flex;justify-content:space-between;align-items:flex-start;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04);gap:12px;}
 .ai-row:last-child{border-bottom:none;}
 .ai-desc{font-size:12px;color:var(--text);margin-bottom:3px;}
 .ai-sub{font-size:10px;font-family:var(--mono);color:var(--text2);}
 .online-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);display:inline-block;margin-right:5px;box-shadow:0 0 5px var(--accent);animation:tbpulse 2s infinite;}
 .offline-dot{width:6px;height:6px;border-radius:50%;background:var(--text3);display:inline-block;margin-right:5px;}
-
-/* ── CHAT TAB ── */
+/* CHAT */
 .chat-container{display:flex;flex-direction:column;height:calc(100vh - 280px);min-height:480px;}
 .chat-messages{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:4px 0 16px;scrollbar-width:none;}
 .chat-messages::-webkit-scrollbar{display:none;}
@@ -119,7 +133,7 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
 .chat-msg.assistant .msg-label{color:var(--blue);}
 .chat-msg.system-alert .msg-label{color:var(--red);}
 .chat-input-row{display:flex;gap:8px;padding-top:12px;border-top:1px solid var(--border);}
-.chat-input{flex:1;padding:11px 14px;background:var(--bg3);border:1px solid var(--border2);border-radius:10px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;transition:border-color 0.2s;resize:none;height:44px;}
+.chat-input{flex:1;padding:11px 14px;background:var(--bg3);border:1px solid var(--border2);border-radius:10px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;transition:border-color 0.2s;}
 .chat-input:focus{border-color:var(--accent);}
 .chat-send{padding:0 18px;background:rgba(0,229,160,0.1);border:1px solid rgba(0,229,160,0.3);border-radius:10px;color:var(--accent);font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;transition:background 0.2s;white-space:nowrap;letter-spacing:1px;}
 .chat-send:hover{background:rgba(0,229,160,0.18);}
@@ -132,16 +146,16 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
 .typing-dot:nth-child(2){animation-delay:0.2s;}
 .typing-dot:nth-child(3){animation-delay:0.4s;}
 @keyframes typingBounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-5px)}}
-
 /* MODAL */
 .modal-overlay{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity 0.25s ease;}
 .modal-overlay.open{opacity:1;pointer-events:all;}
 .modal-backdrop{position:absolute;inset:0;background:rgba(2,7,15,0.75);backdrop-filter:blur(4px);}
-.modal-box{position:relative;z-index:1;background:var(--bg2);border:1px solid var(--border2);border-radius:16px;padding:2rem;width:100%;max-width:360px;transform:translateY(16px) scale(0.97);transition:transform 0.28s cubic-bezier(0.22,1,0.36,1);box-shadow:0 24px 64px rgba(0,0,0,0.5);}
+.modal-box{position:relative;z-index:1;background:var(--bg2);border:1px solid var(--border2);border-radius:16px;padding:2rem;width:100%;max-width:380px;transform:translateY(16px) scale(0.97);transition:transform 0.28s cubic-bezier(0.22,1,0.36,1);box-shadow:0 24px 64px rgba(0,0,0,0.5);}
 .modal-overlay.open .modal-box{transform:translateY(0) scale(1);}
 .modal-icon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;margin-bottom:1rem;font-size:20px;}
 .modal-icon.danger{background:rgba(255,77,77,0.1);border:1px solid rgba(255,77,77,0.25);}
 .modal-icon.warn{background:rgba(255,179,68,0.1);border:1px solid rgba(255,179,68,0.25);}
+.modal-icon.success{background:rgba(0,229,160,0.1);border:1px solid rgba(0,229,160,0.25);}
 .modal-title{font-size:17px;font-weight:600;margin-bottom:6px;}
 .modal-msg{font-size:12px;color:var(--text2);line-height:1.6;margin-bottom:1.5rem;}
 .modal-msg strong{color:var(--text);}
@@ -150,8 +164,9 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
 .modal-confirm{padding:9px 18px;border:none;border-radius:8px;font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;letter-spacing:0.5px;}
 .modal-confirm.danger{background:var(--red);color:#fff;}
 .modal-confirm.amber{background:var(--amber);color:var(--bg);}
+.modal-confirm.success{background:var(--accent);color:var(--bg);}
 #toast-container{position:fixed;bottom:24px;right:24px;z-index:300;display:flex;flex-direction:column;gap:8px;pointer-events:none;}
-.toast{display:flex;align-items:center;gap:10px;padding:10px 16px;border-radius:10px;border:1px solid;font-family:var(--mono);font-size:11px;backdrop-filter:blur(12px);animation:toastIn 0.3s cubic-bezier(0.22,1,0.36,1);min-width:220px;max-width:320px;}
+.toast{display:flex;align-items:center;gap:10px;padding:10px 16px;border-radius:10px;border:1px solid;font-family:var(--mono);font-size:11px;backdrop-filter:blur(12px);animation:toastIn 0.3s cubic-bezier(0.22,1,0.36,1);min-width:220px;max-width:340px;}
 .toast.leaving{animation:toastOut 0.3s ease forwards;}
 @keyframes toastIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
 @keyframes toastOut{to{opacity:0;transform:translateX(20px)}}
@@ -218,22 +233,32 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
     <div class="wb-badge">SESSION ACTIVE</div>
   </div>
 
+  <!-- Pending device alert bar -->
+  <div class="pending-alert" id="pending-alert">
+    <div class="pa-left">
+      <div class="pa-dot"></div>
+      <span id="pending-alert-text">New device pending approval</span>
+    </div>
+    <button class="pa-btn" onclick="switchTab('devices', document.querySelector('[data-tab=devices]'))">REVIEW NOW →</button>
+  </div>
+
   <div class="metrics">
     <div class="metric-card"><div class="metric-label">Layers Active</div><div class="metric-value mv-green" id="m-layers">—</div><div class="metric-delta">Consensus nodes</div></div>
     <div class="metric-card"><div class="metric-label">Attempts Today</div><div class="metric-value mv-white" id="m-attempts">—</div><div class="metric-delta">Login attempts</div></div>
     <div class="metric-card"><div class="metric-label">Blocked IPs</div><div class="metric-value mv-red" id="m-blocked">—</div><div class="metric-delta">Active blocks</div></div>
     <div class="metric-card"><div class="metric-label">AI Alerts</div><div class="metric-value mv-amber" id="m-ai">—</div><div class="metric-delta">Flagged events</div></div>
     <div class="metric-card"><div class="metric-label">Online Sessions</div><div class="metric-value mv-blue" id="m-online">—</div><div class="metric-delta">Right now</div></div>
+    <div class="metric-card"><div class="metric-label">Pending Devices</div><div class="metric-value mv-amber" id="m-pending">—</div><div class="metric-delta">Awaiting approval</div></div>
   </div>
 
   <div class="tabs">
-    <div class="tab active" onclick="switchTab('overview',this)">OVERVIEW</div>
-    <div class="tab" onclick="switchTab('blacklist',this)">BLACKLIST</div>
-    <div class="tab" onclick="switchTab('whitelist',this)">WHITELIST</div>
-    <div class="tab" onclick="switchTab('ai',this)">AI LOG</div>
-    <div class="tab" onclick="switchTab('sessions',this)">SESSIONS</div>
-    <div class="tab" onclick="switchTab('devices',this)">🔐 DEVICES</div>
-    <div class="tab" onclick="switchTab('chat',this)">🤖 GUARD AI</div>
+    <div class="tab active" data-tab="overview" onclick="switchTab('overview',this)">OVERVIEW</div>
+    <div class="tab" data-tab="devices" onclick="switchTab('devices',this)">DEVICES <span class="tab-badge" id="tab-badge-devices"></span></div>
+    <div class="tab" data-tab="blacklist" onclick="switchTab('blacklist',this)">BLACKLIST</div>
+    <div class="tab" data-tab="whitelist" onclick="switchTab('whitelist',this)">WHITELIST</div>
+    <div class="tab" data-tab="ai" onclick="switchTab('ai',this)">AI LOG</div>
+    <div class="tab" data-tab="sessions" onclick="switchTab('sessions',this)">SESSIONS</div>
+    <div class="tab" data-tab="chat" onclick="switchTab('chat',this)">🤖 GUARD AI</div>
   </div>
 
   <!-- OVERVIEW -->
@@ -241,24 +266,60 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
     <div class="grid-2">
       <div class="panel">
         <div class="panel-title">Security Layers <span class="panel-badge" id="layer-badge">CHECKING...</span></div>
-        <div class="layer-row"><div class="layer-left"><div class="layer-icon">🔑</div><div><div class="layer-name">Password Verification</div><div class="layer-desc">bcrypt hash comparison</div></div></div><span class="tag-loading" id="st-password">···</span></div>
-        <div class="layer-row"><div class="layer-left"><div class="layer-icon">⏱</div><div><div class="layer-name">Request Timestamp</div><div class="layer-desc">30-second expiry window</div></div></div><span class="tag-loading" id="st-timestamp">···</span></div>
+        <div class="layer-row"><div class="layer-left"><div class="layer-icon">🔑</div><div><div class="layer-name">Password Verification</div><div class="layer-desc">bcrypt hash · DB lookup</div></div></div><span class="tag-loading" id="st-password">···</span></div>
+        <div class="layer-row"><div class="layer-left"><div class="layer-icon">⏱</div><div><div class="layer-name">Request Timestamp</div><div class="layer-desc">30-second expiry</div></div></div><span class="tag-loading" id="st-timestamp">···</span></div>
         <div class="layer-row"><div class="layer-left"><div class="layer-icon">🌐</div><div><div class="layer-name">IP Access Control</div><div class="layer-desc">Whitelist enforcement</div></div></div><span class="tag-loading" id="st-ip_whitelist">···</span></div>
-        <div class="layer-row"><div class="layer-left"><div class="layer-icon">✍️</div><div><div class="layer-name">Digital Signature</div><div class="layer-desc">RSA-PSS verification</div></div></div><span class="tag-loading" id="st-digital_sig">···</span></div>
+        <div class="layer-row"><div class="layer-left"><div class="layer-icon">💻</div><div><div class="layer-name">Device Signature</div><div class="layer-desc">ECDSA P-256 · admin-approved</div></div></div><span class="tag-loading" id="st-digital_sig">···</span></div>
         <div class="layer-row"><div class="layer-left"><div class="layer-icon">🎟</div><div><div class="layer-name">Session Management</div><div class="layer-desc">One-time token (atomic)</div></div></div><span class="tag-loading" id="st-session_token">···</span></div>
         <div class="layer-row"><div class="layer-left"><div class="layer-icon">🚦</div><div><div class="layer-name">Rate Limiting</div><div class="layer-desc">5 attempts / hour max</div></div></div><span class="tag-loading" id="st-rate_limit">···</span></div>
       </div>
       <div class="panel">
         <div class="panel-title">Camera Feeds <span class="panel-badge" id="cam-badge">LOCKED</span></div>
-        <div class="cam-feed"><div class="cam-inner"><div class="cam-dot" id="cam1-dot"></div><div class="cam-label" id="cam1-label">CAM 1 · LOCKED</div></div></div>
-        <div class="cam-feed"><div class="cam-inner"><div class="cam-dot" id="cam2-dot"></div><div class="cam-label" id="cam2-label">CAM 2 · LOCKED</div></div></div>
-        <div style="font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:8px;text-align:center;">Unlocks when all 6/6 nodes agree</div>
+        <!-- Camera 1 -->
+        <div class="cam-feed" id="cam1-container">
+          <div class="cam-locked" id="cam1-locked">
+            <div class="cam-inner">
+              <div class="cam-dot" style="background:var(--red);box-shadow:0 0 10px var(--red);"></div>
+              <div class="cam-label" style="color:var(--red);">CAM 1 · LOCKED</div>
+            </div>
+          </div>
+          <div style="display:none;" id="cam1-live">
+            <div class="cam-live-badge"><div class="cam-live-dot"></div>LIVE</div>
+            <img class="cam-img" id="cam1-img" src="" alt="Camera 1"/>
+          </div>
+        </div>
+        <!-- Camera 2 -->
+        <div class="cam-feed" id="cam2-container">
+          <div class="cam-locked" id="cam2-locked">
+            <div class="cam-inner">
+              <div class="cam-dot" style="background:var(--red);box-shadow:0 0 10px var(--red);"></div>
+              <div class="cam-label" style="color:var(--red);">CAM 2 · LOCKED</div>
+            </div>
+          </div>
+          <div style="display:none;" id="cam2-live">
+            <div class="cam-live-badge"><div class="cam-live-dot"></div>LIVE</div>
+            <img class="cam-img" id="cam2-img" src="" alt="Camera 2"/>
+          </div>
+        </div>
+        <div style="font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:8px;text-align:center;">Unlocks when all 6/6 nodes agree + approved device</div>
       </div>
     </div>
     <div class="panel grid-full">
       <div class="panel-title">Access Log <span class="panel-badge">LIVE</span></div>
       <div class="log-header"><span>TIME</span><span>IP ADDRESS</span><span>USER</span><span>STATUS</span></div>
       <div id="log-rows"><div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- DEVICES -->
+  <div id="tab-devices" class="tab-section">
+    <div class="panel">
+      <div class="list-header">
+        <div class="panel-title" style="margin:0;">Device Manager <span class="panel-badge" id="dev-count-badge">—</span></div>
+        <button class="mini-btn btn-green" onclick="loadDevices()">↻ REFRESH</button>
+      </div>
+      <div class="tbl-header" style="grid-template-columns:1fr 90px 100px 120px 160px;"><span>DEVICE / USER</span><span>STATUS</span><span>REGISTERED</span><span>APPROVED</span><span>ACTIONS</span></div>
+      <div id="dev-rows"><div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">Loading...</div></div>
     </div>
   </div>
 
@@ -310,15 +371,6 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
     </div>
   </div>
 
-  <!-- DEVICES -->
-  <div id="tab-devices" class="tab-section">
-    <div class="panel">
-      <div class="panel-title">Device Manager <span class="panel-badge" id="dev-count-badge">—</span></div>
-      <div class="tbl-header" style="grid-template-columns:1fr 1fr 90px 100px 130px;"><span>USERNAME</span><span>DEVICE LABEL</span><span>STATUS</span><span>REGISTERED</span><span>ACTION</span></div>
-      <div id="dev-rows"><div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">Loading...</div></div>
-    </div>
-  </div>
-
   <!-- GUARD AI CHAT -->
   <div id="tab-chat" class="tab-section">
     <div class="panel" style="height:calc(100vh - 260px);display:flex;flex-direction:column;">
@@ -329,7 +381,7 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
       <div class="chat-messages" id="chat-messages">
         <div class="chat-msg assistant">
           <span class="msg-label">NETAD GUARD</span>
-          <div class="msg-bubble">Hello. I'm NETAD Guard, your AI security officer. I have live access to your system — login logs, node status, blacklist, whitelist, and active sessions.\n\nYou can ask me anything or give me commands like:\n• "Block 192.168.1.9"\n• "Who's currently online?"\n• "Show recent suspicious activity"\n• "Forgive 192.168.1.9"\n• "Kick kevin's session"</div>
+          <div class="msg-bubble">Hello. I'm NETAD Guard — your AI security officer. I have live access to your system including login logs, node status, device approvals, blacklist, whitelist, and active sessions.\n\nCommands I can execute:\n• "Block 192.168.1.9"\n• "Approve device [device_id]"\n• "Who's currently online?"\n• "Show pending devices"\n• "Kick kevin's session"\n• "Forgive 192.168.1.9"</div>
           <span class="msg-time">System initialized</span>
         </div>
       </div>
@@ -339,11 +391,11 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
           <button class="chat-send" id="chat-send" onclick="sendChat()">SEND →</button>
         </div>
         <div class="chat-hint">
-          Quick commands:
-          <span onclick="setChatInput('Show recent suspicious activity')">suspicious activity</span>
+          Quick:
+          <span onclick="setChatInput('Show all pending devices')">pending devices</span>
           <span onclick="setChatInput('Who is currently online?')">who\'s online</span>
+          <span onclick="setChatInput('Show recent suspicious activity')">suspicious activity</span>
           <span onclick="setChatInput('Show current node status')">node status</span>
-          <span onclick="setChatInput('Show blacklisted IPs')">blacklist</span>
         </div>
       </div>
     </div>
@@ -361,36 +413,27 @@ updateClock();setInterval(updateClock,1000);
 
 // ── SOCKET.IO ──
 const socket=io();
-socket.on('login_attempt',d=>{
-  loadLogs();loadMetrics();
-  showToast(`Login attempt: ${d.username} from ${d.ip} — ${d.result}`, d.result==='GRANTED'?'success':d.result==='SUSPICIOUS'?'warning':'error');
-});
-socket.on('ai_alert',d=>{
-  loadAiLogs();
-  showToast(`🚨 AI Alert: ${d.message}`,'warning',5000);
-});
+socket.on('login_attempt',d=>{loadLogs();loadMetrics();showToast(`Login: ${d.username} from ${d.ip} — ${d.result}`,d.result==='GRANTED'?'success':d.result==='SUSPICIOUS'?'warning':'error');});
+socket.on('ai_alert',d=>{loadAiLogs();showToast(`🚨 AI Alert: ${d.message}`,'warning',5000);});
 socket.on('node_status',d=>{updateNodeStatus(d.nodes);});
-socket.on('session_kicked',d=>{loadSessions();showToast(`${d.username} kicked from system`,'warning');});
-socket.on('guard_action',d=>{
-  showToast(`Guard executed: ${d.action} on ${d.ip||d.username}`,'info');
-  loadBlacklist();loadWhitelist();
-});
+socket.on('session_kicked',d=>{loadSessions();showToast(`${d.username} kicked`,'warning');});
+socket.on('guard_action',d=>{showToast(`Guard: ${d.action} on ${d.ip||d.username}`,'info');loadBlacklist();loadWhitelist();});
+socket.on('chat_message',d=>{if(d.role==='system'||d.role==='assistant')appendChatMsg(d.role==='system'?'system-alert':'assistant',d.message);});
+socket.on('camera_access',d=>{setCameraState(d.accessible);});
 socket.on('device_pending',d=>{
-  showToast(`🔔 New device pending: ${d.username} (${d.pending_count} pending)`,'warning',5000);
-  loadDevices();
+  loadDevices();loadMetrics();
+  showToast(`New device from ${d.username} — needs approval`,'warning',6000);
+  document.getElementById('pending-alert').classList.add('show');
+  document.getElementById('pending-alert-text').textContent=`New device from "${d.username}" is pending approval`;
+  document.getElementById('tab-badge-devices').classList.add('show');
 });
-socket.on('device_approved',d=>{
-  loadDevices();
-});
-socket.on('chat_message',d=>{
-  if(d.role==='system'||d.role==='assistant') appendChatMsg(d.role==='system'?'system-alert':'assistant', d.message);
-});
+socket.on('device_approved',d=>{loadDevices();showToast('Device approved','success');});
 
 // ── MODAL ──
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.modal-overlay.open').forEach(m=>m.classList.remove('open'));});
-function confirmLogout(){closeModal('modal-logout');showToast('Session terminated. Redirecting...','info');setTimeout(()=>{document.body.classList.add('leaving');setTimeout(()=>{window.location.href='/logout';},300);},900);}
+function confirmLogout(){closeModal('modal-logout');showToast('Session terminated...','info');setTimeout(()=>{document.body.classList.add('leaving');setTimeout(()=>{window.location.href='/logout';},300);},900);}
 let confirmCallback=null;
 function confirm2(opts){
   document.getElementById('confirm-icon').className='modal-icon '+(opts.iconClass||'warn');
@@ -416,14 +459,41 @@ function showToast(msg,type='info',duration=3200){
 function switchTab(name,el){
   document.querySelectorAll('.tab-section').forEach(s=>s.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-  document.getElementById('tab-'+name).classList.add('active');el.classList.add('active');
+  document.getElementById('tab-'+name).classList.add('active');
+  if(el)el.classList.add('active');
+  if(name==='devices'){loadDevices();document.getElementById('tab-badge-devices').classList.remove('show');}
   if(name==='blacklist')loadBlacklist();
   if(name==='whitelist')loadWhitelist();
   if(name==='ai')loadAiLogs();
   if(name==='sessions')loadSessions();
   if(name==='chat')loadChatHistory();
-  if(name==='devices')loadDevices();
 }
+
+// ── CAMERA ──
+let _cameraOpen=false;
+function setCameraState(open){
+  _cameraOpen=open;
+  document.getElementById('cam-badge').textContent=open?'2 LIVE':'LOCKED';
+  for(let i=1;i<=2;i++){
+    document.getElementById(`cam${i}-locked`).style.display=open?'none':'flex';
+    document.getElementById(`cam${i}-live`).style.display=open?'block':'none';
+    if(open){
+      const img=document.getElementById(`cam${i}-img`);
+      // Append timestamp to bust cache on reconnect
+      img.src=`/api/camera/${i}/stream?t=${Date.now()}`;
+    } else {
+      document.getElementById(`cam${i}-img`).src='';
+    }
+  }
+}
+// Check camera status on load
+async function checkCameraStatus(){
+  try{
+    const d=await fetch('/api/camera/status').then(r=>r.json());
+    setCameraState(d.accessible);
+  }catch(e){}
+}
+checkCameraStatus();
 
 // ── NODE STATUS ──
 function updateNodeStatus(nodes){
@@ -436,20 +506,12 @@ function updateNodeStatus(nodes){
   });
   document.getElementById('m-layers').textContent=`${alive}/6`;
   document.getElementById('layer-badge').textContent=`${alive}/6 ACTIVE`;
-  // Camera feed: unlock if all 6 alive
-  const allAlive=alive===6;
-  document.getElementById('cam-badge').textContent=allAlive?'2 LIVE':'LOCKED';
-  document.getElementById('cam1-label').textContent=allAlive?'CAM 1 · LIVE':'CAM 1 · LOCKED';
-  document.getElementById('cam2-label').textContent=allAlive?'CAM 2 · LIVE':'CAM 2 · LOCKED';
-  document.getElementById('cam1-dot').style.background=allAlive?'var(--accent)':'var(--red)';
-  document.getElementById('cam2-dot').style.background=allAlive?'var(--accent)':'var(--red)';
 }
 async function fetchLayerStatus(){
   try{
-    const res=await fetch('/api/node-status');const data=await res.json();
+    const data=await fetch('/api/node-status').then(r=>r.json());
     let alive=0;
-    const nodeMap={'password':1,'timestamp':2,'ip_whitelist':3,'digital_sig':4,'session_token':5,'rate_limit':6};
-    for(const [key,up] of Object.entries(data)){
+    for(const[key,up]of Object.entries(data)){
       const el=document.getElementById('st-'+key);if(!el)continue;
       if(up){el.textContent='ACTIVE';el.className='tag-alive';alive++;}
       else{el.textContent='OFFLINE';el.className='tag-dead';}
@@ -457,30 +519,38 @@ async function fetchLayerStatus(){
     const total=Object.keys(data).length;
     document.getElementById('m-layers').textContent=`${alive}/${total}`;
     document.getElementById('layer-badge').textContent=`${alive}/${total} ACTIVE`;
-    const allAlive=alive===total&&total===6;
-    document.getElementById('cam-badge').textContent=allAlive?'2 LIVE':'LOCKED';
-    document.getElementById('cam1-label').textContent=allAlive?'CAM 1 · LIVE':'CAM 1 · LOCKED';
-    document.getElementById('cam2-label').textContent=allAlive?'CAM 2 · LIVE':'CAM 2 · LOCKED';
-    document.getElementById('cam1-dot').style.background=allAlive?'var(--accent)':'var(--red)';
-    document.getElementById('cam2-dot').style.background=allAlive?'var(--accent)':'var(--red)';
-  }catch(e){['password','timestamp','ip_whitelist','digital_sig','session_token','rate_limit'].forEach(k=>{const el=document.getElementById('st-'+k);if(el){el.textContent='OFFLINE';el.className='tag-dead';}});}
+  }catch(e){}
 }
 fetchLayerStatus();setInterval(fetchLayerStatus,8000);
 
 // ── METRICS ──
 async function loadMetrics(){
   try{
-    const [logs,bl,ai,sess]=await Promise.all([fetch('/api/logs').then(r=>r.json()),fetch('/api/blacklist').then(r=>r.json()),fetch('/api/ai-logs').then(r=>r.json()),fetch('/api/sessions').then(r=>r.json())]);
+    const[logs,bl,ai,sess,devs]=await Promise.all([
+      fetch('/api/logs').then(r=>r.json()),
+      fetch('/api/blacklist').then(r=>r.json()),
+      fetch('/api/ai-logs').then(r=>r.json()),
+      fetch('/api/sessions').then(r=>r.json()),
+      fetch('/api/devices').then(r=>r.json()),
+    ]);
     document.getElementById('m-attempts').textContent=logs.length;
     document.getElementById('m-blocked').textContent=bl.length;
     document.getElementById('m-ai').textContent=ai.filter(a=>a.flagged).length;
     document.getElementById('m-online').textContent=sess.filter(s=>s.online).length;
+    const pending=devs.filter(d=>d.status==='pending').length;
+    document.getElementById('m-pending').textContent=pending;
+    if(pending>0){
+      document.getElementById('pending-alert').classList.add('show');
+      document.getElementById('pending-alert-text').textContent=`${pending} device${pending>1?'s':''} pending approval`;
+      document.getElementById('tab-badge-devices').classList.add('show');
+    }
   }catch(e){}
 }
 loadMetrics();
 
 // ── LOGS ──
 function fmtTs(ts){if(!ts)return'—';try{return new Date(ts).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});}catch{return ts.substring(11,19)||'—';}}
+function fmtDate(ts){if(!ts)return'—';try{return new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric'});}catch{return'—';}}
 async function loadLogs(){
   try{
     const logs=await fetch('/api/logs').then(r=>r.json());
@@ -492,11 +562,75 @@ async function loadLogs(){
       div.innerHTML=`<span class="log-time">${fmtTs(l.timestamp)}</span><span class="log-ip">${l.ip||'—'}</span><span class="log-user">${l.username||'—'}</span><span class="${tag}">${l.result}</span>`;
       c.appendChild(div);
     });
-  }catch(e){document.getElementById('log-rows').innerHTML='<div style="color:var(--red);font-family:var(--mono);font-size:11px;padding:12px 0;">Could not load logs</div>';}
+  }catch(e){}
 }
 loadLogs();
 
-// ── BLACKLIST (real API) ──
+// ── DEVICES (real API) ──
+async function loadDevices(){
+  try{
+    const data=await fetch('/api/devices').then(r=>r.json());
+    const c=document.getElementById('dev-rows');c.innerHTML='';
+    const pending=data.filter(d=>d.status==='pending').length;
+    document.getElementById('dev-count-badge').textContent=`${data.length} TOTAL · ${pending} PENDING`;
+    document.getElementById('m-pending').textContent=pending;
+    if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No devices registered yet</div>';return;}
+    data.forEach(d=>{
+      const div=document.createElement('div');div.className='tbl-row';
+      div.style.gridTemplateColumns='1fr 90px 100px 120px 160px';
+      const tagClass=d.status==='approved'?'tag-approved':d.status==='pending'?'tag-pending':'tag-rejected';
+      const shortId=d.device_id?d.device_id.substring(0,12)+'...':'—';
+      const label=(d.label||'').substring(0,30);
+      div.innerHTML=`
+        <div>
+          <div style="color:var(--text);font-weight:500;">${d.username||'—'}</div>
+          <div style="color:var(--text3);font-size:9px;margin-top:2px;" title="${d.device_id}">${shortId}</div>
+          <div style="color:var(--text3);font-size:9px;">${label}</div>
+        </div>
+        <span class="${tagClass}">${(d.status||'').toUpperCase()}</span>
+        <span style="color:var(--text2);font-size:10px;">${fmtDate(d.created_at)}</span>
+        <span style="color:var(--text2);font-size:10px;">${d.approved_at?fmtDate(d.approved_at):'—'}</span>
+        <span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          ${d.status==='pending'?`
+            <button class="mini-btn btn-green btn-xs" onclick="doApproveDevice('${d.device_id}','${d.username}')">APPROVE</button>
+            <button class="mini-btn btn-red btn-xs" onclick="doRejectDevice('${d.device_id}','${d.username}')">REJECT</button>
+          `:''}
+          ${d.status==='approved'?`<button class="mini-btn btn-red btn-xs" onclick="doDeleteDevice('${d.device_id}','${d.username}')">REVOKE</button>`:''}
+          ${d.status==='rejected'?`<button class="mini-btn btn-green btn-xs" onclick="doApproveDevice('${d.device_id}','${d.username}')">RE-APPROVE</button>`:''}
+        </span>`;
+      c.appendChild(div);
+    });
+  }catch(e){document.getElementById('dev-rows').innerHTML='<div style="color:var(--red);font-family:var(--mono);font-size:11px;padding:12px 0;">Could not load devices</div>';}
+}
+
+function doApproveDevice(device_id,username){
+  confirm2({title:'Approve Device?',msg:`Allow <strong>${username}</strong>'s device to authenticate? Node 4 will accept signatures from this device.`,icon:'✅',iconClass:'success',btnLabel:'APPROVE',btnClass:'success',
+    onConfirm:async()=>{
+      await fetch('/api/devices/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id})});
+      loadDevices();loadMetrics();showToast(`Device approved for ${username}`,'success');
+    }
+  });
+}
+
+function doRejectDevice(device_id,username){
+  confirm2({title:'Reject Device?',msg:`Reject <strong>${username}</strong>'s device? They will not be able to authenticate from this device.`,icon:'🚫',iconClass:'danger',btnLabel:'REJECT',btnClass:'danger',
+    onConfirm:async()=>{
+      await fetch('/api/devices/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id})});
+      loadDevices();loadMetrics();showToast(`Device rejected for ${username}`,'warning');
+    }
+  });
+}
+
+function doDeleteDevice(device_id,username){
+  confirm2({title:'Revoke Device?',msg:`Permanently revoke <strong>${username}</strong>'s device? They must re-register from that device.`,icon:'🗑️',iconClass:'danger',btnLabel:'REVOKE',btnClass:'danger',
+    onConfirm:async()=>{
+      await fetch('/api/devices/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id})});
+      loadDevices();loadMetrics();showToast(`Device revoked for ${username}`,'error');
+    }
+  });
+}
+
+// ── BLACKLIST ──
 async function loadBlacklist(){
   try{
     const data=await fetch('/api/blacklist').then(r=>r.json());
@@ -507,10 +641,10 @@ async function loadBlacklist(){
     data.forEach(item=>{
       const div=document.createElement('div');div.className='tbl-row';div.style.gridTemplateColumns='1fr 90px 130px 90px';
       const exp=item.type==='temporary'&&item.blocked_until?new Date(item.blocked_until).toLocaleTimeString():'Permanent';
-      div.innerHTML=`<span style="color:var(--text)">${item.ip}</span><span class="${item.type==='temporary'?'tag-temp':'tag-perm'}">${item.type.toUpperCase()}</span><span style="color:var(--text2);font-size:10px;">${exp}</span><button class="mini-btn btn-amber" onclick="doForgive('${item.ip}')">FORGIVE</button>`;
+      div.innerHTML=`<span style="color:var(--text)">${item.ip}</span><span class="${item.type==='temporary'?'tag-temp':'tag-perm'}">${item.type.toUpperCase()}</span><span style="color:var(--text2);font-size:10px;">${exp}</span><button class="mini-btn btn-amber btn-xs" onclick="doForgive('${item.ip}')">FORGIVE</button>`;
       c.appendChild(div);
     });
-  }catch(e){document.getElementById('bl-rows').innerHTML='<div style="color:var(--red);font-family:var(--mono);font-size:11px;padding:12px 0;">Could not load blacklist</div>';}
+  }catch(e){}
 }
 function doForgive(ip){
   confirm2({title:'Forgive IP?',msg:`Remove <strong>${ip}</strong> from the blacklist?`,icon:'🔓',iconClass:'warn',btnLabel:'FORGIVE',btnClass:'amber',
@@ -524,7 +658,7 @@ async function addBl(){
   document.getElementById('bl-input').value='';loadBlacklist();loadMetrics();showToast(`${v} blocked`,'error');
 }
 
-// ── WHITELIST (real API) ──
+// ── WHITELIST ──
 async function loadWhitelist(){
   try{
     const data=await fetch('/api/whitelist').then(r=>r.json());
@@ -533,10 +667,10 @@ async function loadWhitelist(){
     if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No whitelisted IPs</div>';return;}
     data.forEach(item=>{
       const div=document.createElement('div');div.className='tbl-row';div.style.gridTemplateColumns='1fr 1fr 80px';
-      div.innerHTML=`<span style="color:var(--text)">${item.ip}</span><span style="color:var(--text2)">${item.label||'—'}</span><button class="mini-btn btn-red" onclick="doRemoveWl('${item.ip}')">REMOVE</button>`;
+      div.innerHTML=`<span style="color:var(--text)">${item.ip}</span><span style="color:var(--text2)">${item.label||'—'}</span><button class="mini-btn btn-red btn-xs" onclick="doRemoveWl('${item.ip}')">REMOVE</button>`;
       c.appendChild(div);
     });
-  }catch(e){document.getElementById('wl-rows').innerHTML='<div style="color:var(--red);font-family:var(--mono);font-size:11px;padding:12px 0;">Could not load whitelist</div>';}
+  }catch(e){}
 }
 function doRemoveWl(ip){
   confirm2({title:'Remove from Whitelist?',msg:`Remove <strong>${ip}</strong> from trusted IPs?`,icon:'⚠️',iconClass:'warn',btnLabel:'REMOVE',btnClass:'danger',
@@ -552,24 +686,22 @@ async function addWl(){
   loadWhitelist();showToast(`${ip} added to whitelist`,'success');
 }
 
-// ── AI LOGS (real API) ──
+// ── AI LOGS ──
 async function loadAiLogs(){
   try{
     const data=await fetch('/api/ai-logs').then(r=>r.json());
     const c=document.getElementById('ai-rows');c.innerHTML='';
-    if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No AI anomaly events yet — system is learning</div>';return;}
+    if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No AI anomaly events yet</div>';return;}
     data.forEach(l=>{
       const div=document.createElement('div');div.className='ai-row';
-      const tag=l.flagged?'tag-flagged':'tag-normal';
-      const label=l.flagged?'FLAGGED':'NORMAL';
-      div.innerHTML=`<div><div class="ai-desc">${l.description||'Anomaly detected'}</div><div class="ai-sub">${l.ip||'—'} · ${l.username||'—'} · score: ${parseFloat(l.score||0).toFixed(3)} · ${fmtTs(l.timestamp)}</div></div><span class="${tag}">${label}</span>`;
+      div.innerHTML=`<div><div class="ai-desc">${l.description||'Anomaly detected'}</div><div class="ai-sub">${l.ip||'—'} · ${l.username||'—'} · score: ${parseFloat(l.score||0).toFixed(3)} · ${fmtTs(l.timestamp)}</div></div><span class="${l.flagged?'tag-flagged':'tag-normal'}">${l.flagged?'FLAGGED':'NORMAL'}</span>`;
       c.appendChild(div);
     });
     document.getElementById('m-ai').textContent=data.filter(a=>a.flagged).length;
-  }catch(e){document.getElementById('ai-rows').innerHTML='<div style="color:var(--red);font-family:var(--mono);font-size:11px;padding:12px 0;">Could not load AI logs</div>';}
+  }catch(e){}
 }
 
-// ── SESSIONS (real API) ──
+// ── SESSIONS ──
 async function loadSessions(){
   try{
     const data=await fetch('/api/sessions').then(r=>r.json());
@@ -580,81 +712,29 @@ async function loadSessions(){
     if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No active sessions</div>';return;}
     data.forEach(s=>{
       const div=document.createElement('div');div.className='tbl-row';div.style.gridTemplateColumns='1fr 1fr 80px 120px 110px';
-      div.innerHTML=`<span style="color:var(--text);font-weight:500;">${s.username||'—'}</span><span style="color:var(--text2)">${s.ip||'—'}</span><span style="color:var(--text2)">${s.role||'—'}</span><span style="color:var(--text3);font-size:10px;">${fmtTs(s.last_seen)}</span><span style="display:flex;align-items:center;gap:6px;"><span class="${s.online?'online-dot':'offline-dot'}"></span><span style="font-size:9px;color:${s.online?'var(--accent)':'var(--text3)'};">${s.online?'ONLINE':'OFFLINE'}</span>${s.online?`<button class="mini-btn btn-red" style="font-size:8px;padding:2px 7px;" onclick="doKick('${s.username}')">KICK</button>`:''}</span>`;
-      div.appendChild(document.createTextNode(''));
+      div.innerHTML=`<span style="color:var(--text);font-weight:500;">${s.username||'—'}</span><span style="color:var(--text2)">${s.ip||'—'}</span><span style="color:var(--text2)">${s.role||'—'}</span><span style="color:var(--text3);font-size:10px;">${fmtTs(s.last_seen)}</span><span style="display:flex;align-items:center;gap:6px;"><span class="${s.online?'online-dot':'offline-dot'}"></span><span style="font-size:9px;color:${s.online?'var(--accent)':'var(--text3)'};">${s.online?'ONLINE':'OFFLINE'}</span>${s.online?`<button class="mini-btn btn-red btn-xs" onclick="doKick('${s.username}')">KICK</button>`:''}</span>`;
       c.appendChild(div);
     });
-  }catch(e){document.getElementById('sess-rows').innerHTML='<div style="color:var(--red);font-family:var(--mono);font-size:11px;padding:12px 0;">Could not load sessions</div>';}
+  }catch(e){}
 }
 function doKick(username){
   confirm2({title:'Force Sign Out?',msg:`Kick <strong>${username}</strong> from the system?`,icon:'⚡',iconClass:'warn',btnLabel:'KICK USER',btnClass:'danger',
-    onConfirm:async()=>{await fetch('/api/sessions/kick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username})});loadSessions();showToast(`${username} has been kicked`,'warning');}
-  });
-}
-
-// ── DEVICES ──
-async function loadDevices(){
-  try{
-    const data=await fetch('/api/devices').then(r=>r.json());
-    const c=document.getElementById('dev-rows');c.innerHTML='';
-    const pending=data.filter(d=>d.status==='pending').length;
-    document.getElementById('dev-count-badge').textContent=`${data.length} TOTAL · ${pending} PENDING`;
-    if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No devices registered yet</div>';return;}
-    data.forEach(d=>{
-      const div=document.createElement('div');div.className='tbl-row';div.style.gridTemplateColumns='1fr 1fr 90px 100px 130px';
-      const statusTag=d.status==='approved'?'tag-granted':d.status==='pending'?'tag-suspicious':'tag-denied';
-      const created=d.created_at?new Date(d.created_at).toLocaleDateString():'--';
-      let actions='';
-      if(d.status==='pending'){
-        actions=`<button class="mini-btn btn-green" style="font-size:9px;padding:3px 8px;" onclick="doApproveDevice('${d.device_id}')">APPROVE</button>
-                 <button class="mini-btn btn-red" style="font-size:9px;padding:3px 8px;margin-left:4px;" onclick="doRejectDevice('${d.device_id}')">REJECT</button>`;
-      } else {
-        actions=`<button class="mini-btn btn-red" style="font-size:9px;padding:3px 8px;" onclick="doDeleteDevice('${d.device_id}')">REMOVE</button>`;
-      }
-      div.innerHTML=`<span style="color:var(--text)">${d.username}</span><span style="color:var(--text2);font-size:10px;" title="${d.label}">${d.label?d.label.substring(0,30)+'...':'—'}</span><span class="${statusTag}">${d.status.toUpperCase()}</span><span style="color:var(--text3);font-size:10px;">${created}</span><span style="display:flex;gap:4px;">${actions}</span>`;
-      c.appendChild(div);
-    });
-  }catch(e){document.getElementById('dev-rows').innerHTML='<div style="color:var(--red);font-family:var(--mono);font-size:11px;padding:12px 0;">Could not load devices</div>';}
-}
-function doApproveDevice(deviceId){
-  confirm2({title:'Approve Device?',msg:'Allow this device to log in?',icon:'🔓',iconClass:'warn',btnLabel:'APPROVE',btnClass:'amber',
-    onConfirm:async()=>{
-      await fetch('/api/devices/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:deviceId})});
-      loadDevices();showToast('Device approved – user can now log in','success');
-    }
-  });
-}
-function doRejectDevice(deviceId){
-  confirm2({title:'Reject Device?',msg:'Block this device from logging in?',icon:'❌',iconClass:'danger',btnLabel:'REJECT',btnClass:'danger',
-    onConfirm:async()=>{
-      await fetch('/api/devices/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:deviceId})});
-      loadDevices();showToast('Device rejected','error');
-    }
-  });
-}
-function doDeleteDevice(deviceId){
-  confirm2({title:'Remove Device?',msg:'Permanently remove this device?',icon:'🗑️',iconClass:'danger',btnLabel:'REMOVE',btnClass:'danger',
-    onConfirm:async()=>{
-      await fetch('/api/devices/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:deviceId})});
-      loadDevices();showToast('Device removed','warning');
-    }
+    onConfirm:async()=>{await fetch('/api/sessions/kick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username})});loadSessions();showToast(`${username} kicked`,'warning');}
   });
 }
 
 // ── GUARD AI CHAT ──
 function setChatInput(text){document.getElementById('chat-input').value=text;document.getElementById('chat-input').focus();}
 function nowTime(){return new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true});}
-
 function appendChatMsg(role,text,time){
   const c=document.getElementById('chat-messages');
   const wrapper=document.createElement('div');
   wrapper.className=`chat-msg ${role==='user'?'user':role==='system-alert'?'system-alert':'assistant'}`;
   const labels={'user':'YOU','assistant':'NETAD GUARD','system-alert':'⚠ SYSTEM ALERT'};
-  wrapper.innerHTML=`<span class="msg-label">${labels[role]||'GUARD'}</span><div class="msg-bubble">${text.replace(/ACTION:\{.*?\}/s,'').trim()}</div><span class="msg-time">${time||nowTime()}</span>`;
+  wrapper.innerHTML=`<span class="msg-label">${labels[role]||'GUARD'}</span><div class="msg-bubble">${(text||'').replace(/ACTION:\{.*?\}/gs,'').trim()}</div><span class="msg-time">${time||nowTime()}</span>`;
   c.appendChild(wrapper);
   c.scrollTop=c.scrollHeight;
 }
-
 function showTyping(){
   const c=document.getElementById('chat-messages');
   const el=document.createElement('div');el.id='typing-indicator';el.className='chat-msg assistant';
@@ -662,35 +742,30 @@ function showTyping(){
   c.appendChild(el);c.scrollTop=c.scrollHeight;
 }
 function removeTyping(){const el=document.getElementById('typing-indicator');if(el)el.remove();}
-
 async function sendChat(){
   const input=document.getElementById('chat-input');
   const msg=input.value.trim();if(!msg)return;
   const btn=document.getElementById('chat-send');
   input.value='';btn.disabled=true;
-  appendChatMsg('user',msg);
-  showTyping();
+  appendChatMsg('user',msg);showTyping();
   try{
     const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg})});
     const data=await res.json();
     removeTyping();
     if(data.reply)appendChatMsg('assistant',data.reply);
-    // Refresh data if guard took an action
     if(data.action_result&&data.action_result.executed){
-      loadBlacklist();loadWhitelist();loadSessions();loadMetrics();
+      loadBlacklist();loadWhitelist();loadSessions();loadMetrics();loadDevices();
     }
   }catch(e){
     removeTyping();
-    appendChatMsg('assistant','Connection error. Make sure Flask is running and GROQ_API_KEY is set in your .env file.');
+    appendChatMsg('assistant','Connection error. Make sure Flask is running and GROQ_API_KEY is set.');
   }
   btn.disabled=false;
 }
-
 async function loadChatHistory(){
   try{
     const data=await fetch('/api/chat/history').then(r=>r.json());
     const c=document.getElementById('chat-messages');
-    // Only load if chat is empty (first load)
     if(c.children.length>1)return;
     data.forEach(m=>{
       if(m.role==='user')appendChatMsg('user',m.message,fmtTs(m.timestamp));
@@ -701,9 +776,8 @@ async function loadChatHistory(){
 }
 
 // ── INIT ──
-loadLogs();loadMetrics();
-setTimeout(()=>showToast('Welcome back, {{ user }} · Session started','success'),500);
-// Session heartbeat
+loadLogs();loadMetrics();loadDevices();
+setTimeout(()=>showToast('Welcome back, {{ user }} · Session active','success'),500);
 setInterval(()=>{fetch('/api/session/heartbeat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'{{ user }}'})});},30000);
 </script>
 </body>

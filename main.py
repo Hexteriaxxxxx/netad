@@ -608,6 +608,10 @@ def api_register_device():
     if not get_user(username):
         return jsonify({'error': 'user not found'}), 404
     register_device(username, device_id, public_key, label)
+    # Auto-approve admin
+    if username == 'admin':
+        approve_device(device_id)
+        return jsonify({'status': 'approved', 'message': 'Admin device auto-approved.'})
     pending = len(get_pending_devices())
     socketio.emit('device_pending', {'username': username, 'device_id': device_id, 'label': label, 'pending_count': pending})
     return jsonify({'status': 'pending', 'message': 'Device registered. Waiting for admin approval.'})
