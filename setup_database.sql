@@ -85,6 +85,18 @@ CREATE TABLE IF NOT EXISTS chat_logs (
     timestamp TIMESTAMP DEFAULT NOW()
 );
 
+-- Device keys table (Web Crypto + IndexedDB device-based auth)
+CREATE TABLE IF NOT EXISTS device_keys (
+    id          SERIAL PRIMARY KEY,
+    username    VARCHAR(50)  NOT NULL,
+    device_id   VARCHAR(255) UNIQUE NOT NULL,
+    public_key  TEXT NOT NULL,
+    label       VARCHAR(255) DEFAULT 'Unknown Device',
+    status      VARCHAR(20)  DEFAULT 'pending',  -- pending, approved, rejected
+    created_at  TIMESTAMP DEFAULT NOW(),
+    approved_at TIMESTAMP
+);
+
 -- ================================================
 -- INDEXES
 -- ================================================

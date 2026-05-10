@@ -135,8 +135,43 @@ body.leaving{animation:pageOut 0.4s ease forwards;}
       </div>
       <div><div class="l-logo-name">NETAD</div><div class="l-logo-sub">SECURITY SYSTEM</div></div>
     </div>
-    <div class="l-title">Access Control</div>
-    <div class="l-sub">// authenticate to continue</div>
+
+    <!-- DEVICE REGISTRATION SECTION -->
+    <div id="device-register-section" style="display:none">
+      <div class="l-title">Register Device</div>
+      <div class="l-sub">// first time on this device — generate your key</div>
+      <div class="field">
+        <label>Your Username</label>
+        <div class="field-wrap">
+          <span class="field-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+          <input type="text" id="reg-username" placeholder="enter your username" autocomplete="off"/>
+        </div>
+      </div>
+      <button class="login-btn" onclick="registerDevice()">
+        <span class="btn-text">🔐 REGISTER THIS DEVICE →</span>
+      </button>
+      <div class="l-status" id="status" style="margin-top:10px"></div>
+      <div style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:12px;line-height:1.8;">
+        A key pair will be generated in your browser.<br>
+        The private key never leaves this device.<br>
+        Admin approval required before you can login.
+      </div>
+    </div>
+
+    <!-- DEVICE STATUS SECTION -->
+    <div id="device-status-section" style="display:none">
+      <div style="text-align:center;padding:2rem 0;">
+        <div style="font-size:32px;margin-bottom:1rem">🔐</div>
+        <div class="l-title" style="margin-bottom:0.5rem">Device Auth</div>
+        <div id="device-status-msg" style="font-family:var(--mono);font-size:11px;margin-top:1rem;line-height:2;"></div>
+        <button class="login-btn" style="margin-top:1.5rem;background:transparent;border:1px solid var(--border2);color:var(--text2)" onclick="initDevice()">
+          <span class="btn-text">CHECK STATUS ↺</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- NORMAL LOGIN SECTION -->
+    <div id="login-section" style="display:none">
     <div class="field">
       <label>Username</label>
       <div class="field-wrap">
@@ -161,10 +196,157 @@ body.leaving{animation:pageOut 0.4s ease forwards;}
     <div class="pipeline" id="pipeline"></div>
     <div class="auth-progress" id="auth-progress"><div class="auth-progress-bar" id="auth-bar"></div></div>
     <div class="l-status" id="status"></div>
+    </div><!-- end login-section -->
   </div>
 </div>
 
 <script>
+// ── DEVICE AUTH (Web Crypto API + IndexedDB) ──
+let _deviceKeyPair = null;
+let _deviceId = localStorage.getItem('netad_device_id');
+
+function openIDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('NETAD_Keys', 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore('keys');
+    req.onsuccess = e => resolve(e.target.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbGet(key) {
+  const db = await openIDB();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction('keys','readonly').objectStore('keys').get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function idbSet(key, value) {
+  const db = await openIDB();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction('keys','readwrite').objectStore('keys').put(value, key);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function initDevice() {
+  try {
+    _deviceKeyPair = await idbGet('device_keypair');
+    _deviceId = localStorage.getItem('netad_device_id');
+
+    if (!_deviceKeyPair || !_deviceId) {
+      showRegistrationUI();
+      return;
+    }
+
+    // Check device status with server
+    const res = await fetch('/api/device-status?device_id=' + _deviceId);
+    const data = await res.json();
+
+    if (data.status === 'approved') {
+      showLoginUI();
+    } else if (data.status === 'pending') {
+      showStatusMessage('pending', data.username);
+    } else if (data.status === 'rejected') {
+      showStatusMessage('rejected', data.username);
+    } else {
+      // Device not in DB (maybe DB was reset) — re-register
+      showRegistrationUI();
+    }
+  } catch(e) {
+    // Server unreachable — show login anyway
+    showLoginUI();
+  }
+}
+
+function showLoginUI() {
+  document.getElementById('device-register-section').style.display = 'none';
+  document.getElementById('device-status-section').style.display = 'none';
+  document.getElementById('login-section').style.display = 'block';
+}
+
+function showRegistrationUI() {
+  document.getElementById('login-section').style.display = 'none';
+  document.getElementById('device-status-section').style.display = 'none';
+  document.getElementById('device-register-section').style.display = 'block';
+}
+
+function showStatusMessage(status, username) {
+  document.getElementById('login-section').style.display = 'none';
+  document.getElementById('device-register-section').style.display = 'none';
+  const sec = document.getElementById('device-status-section');
+  sec.style.display = 'block';
+  if (status === 'pending') {
+    document.getElementById('device-status-msg').innerHTML = `<span style="color:var(--amber)">⏳ DEVICE PENDING APPROVAL</span><br><span style="font-size:10px;color:var(--text2)">Registered as <b>${username}</b>. Ask your admin to approve this device.</span>`;
+  } else {
+    document.getElementById('device-status-msg').innerHTML = `<span style="color:var(--red)">❌ DEVICE REJECTED</span><br><span style="font-size:10px;color:var(--text2)">This device was rejected. Contact your admin.</span>`;
+  }
+}
+
+async function registerDevice() {
+  const username = document.getElementById('reg-username').value.trim();
+  const label = navigator.userAgent.substring(0, 60);
+  if (!username) { setStatus('// enter your username first', 'var(--red)'); return; }
+
+  setStatus('// generating device key pair...', 'var(--text2)');
+
+  try {
+    // Generate ECDSA P-256 key pair — private key is NON-EXTRACTABLE
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false, // private key cannot be exported!
+      ['sign', 'verify']
+    );
+
+    // Export public key as JWK (public key CAN be exported)
+    const publicKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
+
+    // Generate device ID
+    const deviceId = crypto.randomUUID();
+
+    // Save to IndexedDB and localStorage
+    await idbSet('device_keypair', keyPair);
+    localStorage.setItem('netad_device_id', deviceId);
+    _deviceKeyPair = keyPair;
+    _deviceId = deviceId;
+
+    // Register with server
+    const res = await fetch('/api/register-device', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ username, device_id: deviceId, public_key: JSON.stringify(publicKeyJwk), label })
+    });
+    const data = await res.json();
+
+    if (data.error) {
+      setStatus('// ' + data.error, 'var(--red)');
+    } else {
+      showStatusMessage('pending', username);
+    }
+  } catch(e) {
+    setStatus('// device registration failed: ' + e.message, 'var(--red)');
+  }
+}
+
+async function signLoginRequest(username, sessionToken) {
+  if (!_deviceKeyPair || !_deviceId) return null;
+  try {
+    const message = `${username}:${sessionToken}`;
+    const encoded = new TextEncoder().encode(message);
+    const sigBuffer = await crypto.subtle.sign(
+      { name: 'ECDSA', hash: { name: 'SHA-256' } },
+      _deviceKeyPair.privateKey,
+      encoded
+    );
+    const sigBase64 = btoa(String.fromCharCode(...new Uint8Array(sigBuffer)));
+    return { device_id: _deviceId, device_signature: sigBase64, device_message: message };
+  } catch(e) {
+    console.error('Signing error:', e);
+    return null;
+  }
+}
+
 // ── PASSWORD TOGGLE ──
 const pwInput=document.getElementById('p'),pwToggle=document.getElementById('pw-toggle'),pwIcon=document.getElementById('pw-icon');
 let pwVisible=false;
@@ -241,6 +423,9 @@ function updateEvts(){
 }
 function animate(){requestAnimationFrame(animate);if(autoSpin)tRotY+=0.0018;cRotX+=(tRotX-cRotX)*0.07;cRotY+=(tRotY-cRotY)*0.07;globeGroup.rotation.x=cRotX;globeGroup.rotation.y=cRotY;updateEvts();renderer.render(scene,camera);}
 animate();
+
+// ── INIT DEVICE CHECK ON PAGE LOAD ──
+initDevice();
 
 // ── PIPELINE UI ──
 const LAYERS=['Rate Limiting','Password Verification','Request Timestamp','IP Access Control','Digital Signature','Session Management'];
@@ -322,7 +507,7 @@ async function doLogin(){
     const res=await fetch('/api/login',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({username:u,password:p,csrf_token,session_token}),
+      body:JSON.stringify({username:u,password:p,csrf_token,session_token,...(await signLoginRequest(u,session_token)||{})}),
     });
     const data=await res.json();
     clearInterval(stepTimer);

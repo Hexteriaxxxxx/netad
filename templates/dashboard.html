@@ -232,6 +232,7 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
     <div class="tab" onclick="switchTab('whitelist',this)">WHITELIST</div>
     <div class="tab" onclick="switchTab('ai',this)">AI LOG</div>
     <div class="tab" onclick="switchTab('sessions',this)">SESSIONS</div>
+    <div class="tab" onclick="switchTab('devices',this)">🔐 DEVICES</div>
     <div class="tab" onclick="switchTab('chat',this)">🤖 GUARD AI</div>
   </div>
 
@@ -309,6 +310,15 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
     </div>
   </div>
 
+  <!-- DEVICES -->
+  <div id="tab-devices" class="tab-section">
+    <div class="panel">
+      <div class="panel-title">Device Manager <span class="panel-badge" id="dev-count-badge">—</span></div>
+      <div class="tbl-header" style="grid-template-columns:1fr 1fr 90px 100px 130px;"><span>USERNAME</span><span>DEVICE LABEL</span><span>STATUS</span><span>REGISTERED</span><span>ACTION</span></div>
+      <div id="dev-rows"><div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">Loading...</div></div>
+    </div>
+  </div>
+
   <!-- GUARD AI CHAT -->
   <div id="tab-chat" class="tab-section">
     <div class="panel" style="height:calc(100vh - 260px);display:flex;flex-direction:column;">
@@ -365,6 +375,13 @@ socket.on('guard_action',d=>{
   showToast(`Guard executed: ${d.action} on ${d.ip||d.username}`,'info');
   loadBlacklist();loadWhitelist();
 });
+socket.on('device_pending',d=>{
+  showToast(`🔔 New device pending: ${d.username} (${d.pending_count} pending)`,'warning',5000);
+  loadDevices();
+});
+socket.on('device_approved',d=>{
+  loadDevices();
+});
 socket.on('chat_message',d=>{
   if(d.role==='system'||d.role==='assistant') appendChatMsg(d.role==='system'?'system-alert':'assistant', d.message);
 });
@@ -405,6 +422,7 @@ function switchTab(name,el){
   if(name==='ai')loadAiLogs();
   if(name==='sessions')loadSessions();
   if(name==='chat')loadChatHistory();
+  if(name==='devices')loadDevices();
 }
 
 // ── NODE STATUS ──
@@ -571,6 +589,55 @@ async function loadSessions(){
 function doKick(username){
   confirm2({title:'Force Sign Out?',msg:`Kick <strong>${username}</strong> from the system?`,icon:'⚡',iconClass:'warn',btnLabel:'KICK USER',btnClass:'danger',
     onConfirm:async()=>{await fetch('/api/sessions/kick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username})});loadSessions();showToast(`${username} has been kicked`,'warning');}
+  });
+}
+
+// ── DEVICES ──
+async function loadDevices(){
+  try{
+    const data=await fetch('/api/devices').then(r=>r.json());
+    const c=document.getElementById('dev-rows');c.innerHTML='';
+    const pending=data.filter(d=>d.status==='pending').length;
+    document.getElementById('dev-count-badge').textContent=`${data.length} TOTAL · ${pending} PENDING`;
+    if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No devices registered yet</div>';return;}
+    data.forEach(d=>{
+      const div=document.createElement('div');div.className='tbl-row';div.style.gridTemplateColumns='1fr 1fr 90px 100px 130px';
+      const statusTag=d.status==='approved'?'tag-granted':d.status==='pending'?'tag-suspicious':'tag-denied';
+      const created=d.created_at?new Date(d.created_at).toLocaleDateString():'--';
+      let actions='';
+      if(d.status==='pending'){
+        actions=`<button class="mini-btn btn-green" style="font-size:9px;padding:3px 8px;" onclick="doApproveDevice('${d.device_id}')">APPROVE</button>
+                 <button class="mini-btn btn-red" style="font-size:9px;padding:3px 8px;margin-left:4px;" onclick="doRejectDevice('${d.device_id}')">REJECT</button>`;
+      } else {
+        actions=`<button class="mini-btn btn-red" style="font-size:9px;padding:3px 8px;" onclick="doDeleteDevice('${d.device_id}')">REMOVE</button>`;
+      }
+      div.innerHTML=`<span style="color:var(--text)">${d.username}</span><span style="color:var(--text2);font-size:10px;" title="${d.label}">${d.label?d.label.substring(0,30)+'...':'—'}</span><span class="${statusTag}">${d.status.toUpperCase()}</span><span style="color:var(--text3);font-size:10px;">${created}</span><span style="display:flex;gap:4px;">${actions}</span>`;
+      c.appendChild(div);
+    });
+  }catch(e){document.getElementById('dev-rows').innerHTML='<div style="color:var(--red);font-family:var(--mono);font-size:11px;padding:12px 0;">Could not load devices</div>';}
+}
+function doApproveDevice(deviceId){
+  confirm2({title:'Approve Device?',msg:'Allow this device to log in?',icon:'🔓',iconClass:'warn',btnLabel:'APPROVE',btnClass:'amber',
+    onConfirm:async()=>{
+      await fetch('/api/devices/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:deviceId})});
+      loadDevices();showToast('Device approved – user can now log in','success');
+    }
+  });
+}
+function doRejectDevice(deviceId){
+  confirm2({title:'Reject Device?',msg:'Block this device from logging in?',icon:'❌',iconClass:'danger',btnLabel:'REJECT',btnClass:'danger',
+    onConfirm:async()=>{
+      await fetch('/api/devices/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:deviceId})});
+      loadDevices();showToast('Device rejected','error');
+    }
+  });
+}
+function doDeleteDevice(deviceId){
+  confirm2({title:'Remove Device?',msg:'Permanently remove this device?',icon:'🗑️',iconClass:'danger',btnLabel:'REMOVE',btnClass:'danger',
+    onConfirm:async()=>{
+      await fetch('/api/devices/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id:deviceId})});
+      loadDevices();showToast('Device removed','warning');
+    }
   });
 }
 

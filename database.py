@@ -330,6 +330,67 @@ def get_chat_logs(limit=50):
         return list(reversed(rows))  # return oldest first for display
 
 # ================================================
+# DEVICE KEYS (Web Crypto + IndexedDB device auth)
+# ================================================
+
+def register_device(username, device_id, public_key_jwk, label='Unknown Device'):
+    with get_db() as conn:
+        cur = get_cursor(conn)
+        cur.execute("""
+            INSERT INTO device_keys (username, device_id, public_key, label, status)
+            VALUES (%s, %s, %s, %s, 'pending')
+            ON CONFLICT (device_id) DO UPDATE
+            SET public_key = EXCLUDED.public_key, username = EXCLUDED.username
+        """, (username, device_id, public_key_jwk, label))
+
+def get_device(device_id):
+    with get_db() as conn:
+        cur = get_cursor(conn)
+        cur.execute("SELECT * FROM device_keys WHERE device_id = %s", (device_id,))
+        return cur.fetchone()
+
+def get_device_public_key(username, device_id):
+    """Returns public key JWK string only if device is approved."""
+    with get_db() as conn:
+        cur = get_cursor(conn)
+        cur.execute(
+            "SELECT public_key FROM device_keys WHERE username = %s AND device_id = %s AND status = 'approved'",
+            (username, device_id)
+        )
+        row = cur.fetchone()
+        return row['public_key'] if row else None
+
+def get_all_devices():
+    with get_db() as conn:
+        cur = get_cursor(conn)
+        cur.execute("SELECT * FROM device_keys ORDER BY created_at DESC")
+        return cur.fetchall()
+
+def get_pending_devices():
+    with get_db() as conn:
+        cur = get_cursor(conn)
+        cur.execute("SELECT * FROM device_keys WHERE status = 'pending' ORDER BY created_at DESC")
+        return cur.fetchall()
+
+def approve_device(device_id):
+    with get_db() as conn:
+        cur = get_cursor(conn)
+        cur.execute(
+            "UPDATE device_keys SET status = 'approved', approved_at = NOW() WHERE device_id = %s",
+            (device_id,)
+        )
+
+def reject_device(device_id):
+    with get_db() as conn:
+        cur = get_cursor(conn)
+        cur.execute("UPDATE device_keys SET status = 'rejected' WHERE device_id = %s", (device_id,))
+
+def delete_device(device_id):
+    with get_db() as conn:
+        cur = get_cursor(conn)
+        cur.execute("DELETE FROM device_keys WHERE device_id = %s", (device_id,))
+
+# ================================================
 # TEST CONNECTION
 # ================================================
 

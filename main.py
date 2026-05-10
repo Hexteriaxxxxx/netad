@@ -11,7 +11,9 @@ from database import (
     get_whitelist, add_to_whitelist, remove_from_whitelist,
     get_ai_logs, create_session, update_session_heartbeat,
     add_ai_log, get_user, cleanup_used_tokens,
-    add_chat_log, get_chat_logs
+    add_chat_log, get_chat_logs,
+    register_device, get_device, get_all_devices,
+    approve_device, reject_device, delete_device, get_pending_devices
 )
 from dotenv import load_dotenv
 import os
@@ -303,6 +305,9 @@ def login():
         'hash': block.hash,
         'signature': signature,
         'session_token': session_token,
+        'device_id':        data.get('device_id', ''),
+        'device_signature': data.get('device_signature', ''),
+        'device_message':   data.get('device_message', ''),
     }
 
     # Layer: 6/6 Consensus
@@ -352,6 +357,8 @@ def node_status():
 # ── LOGS ──
 @app.route('/api/logs')
 def api_logs():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
     logs = get_logs(50)
     result = []
     for l in logs:
@@ -364,6 +371,8 @@ def api_logs():
 # ── BLACKLIST ──
 @app.route('/api/blacklist')
 def api_blacklist():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
     bl = get_blacklist()
     result = []
     for b in bl:
@@ -375,12 +384,16 @@ def api_blacklist():
 
 @app.route('/api/blacklist/add', methods=['POST'])
 def api_blacklist_add():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
     data = request.get_json()
     add_to_blacklist(data['ip'], data.get('type', 'temporary'))
     return jsonify({'success': True})
 
 @app.route('/api/blacklist/forgive', methods=['POST'])
 def api_blacklist_forgive():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
     data = request.get_json()
     forgive_ip(data['ip'])
     return jsonify({'success': True})
@@ -388,17 +401,23 @@ def api_blacklist_forgive():
 # ── WHITELIST ──
 @app.route('/api/whitelist')
 def api_whitelist():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
     wl = get_whitelist()
     return jsonify([dict(w) for w in wl])
 
 @app.route('/api/whitelist/add', methods=['POST'])
 def api_whitelist_add():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
     data = request.get_json()
     add_to_whitelist(data['ip'], data.get('label', 'New device'))
     return jsonify({'success': True})
 
 @app.route('/api/whitelist/remove', methods=['POST'])
 def api_whitelist_remove():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
     data = request.get_json()
     remove_from_whitelist(data['ip'])
     return jsonify({'success': True})
@@ -406,6 +425,8 @@ def api_whitelist_remove():
 # ── SESSIONS ──
 @app.route('/api/sessions')
 def api_sessions():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
     sess = get_sessions()
     result = []
     for s in sess:
@@ -419,6 +440,8 @@ def api_sessions():
 
 @app.route('/api/sessions/kick', methods=['POST'])
 def api_sessions_kick():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
     data = request.get_json()
     delete_session(data['username'])
     socketio.emit('session_kicked', {'username': data['username']})
@@ -433,6 +456,8 @@ def api_session_heartbeat():
 # ── AI LOGS ──
 @app.route('/api/ai-logs')
 def api_ai_logs():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
     logs = get_ai_logs(20)
     result = []
     for l in logs:
@@ -478,6 +503,8 @@ def _notify_guard(message: str):
 
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
     data = request.get_json()
     user_message = data.get('message', '').strip()
     if not user_message:
@@ -513,7 +540,7 @@ def api_chat():
         client = Groq(api_key=groq_api_key)
         response = client.chat.completions.create(
             model='llama-3.3-70b-versatile', messages=messages,
-            max_tokens=512, temperature=0.4,
+            max_tokens=1024, temperature=0.4,
         )
         reply = response.choices[0].message.content.strip()
         action_result = _execute_action(reply)
@@ -557,6 +584,8 @@ def _execute_action(reply: str) -> dict:
 
 @app.route('/api/chat/history', methods=['GET'])
 def api_chat_history():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
     logs = get_chat_logs(50)
     result = []
     for l in logs:
@@ -565,6 +594,72 @@ def api_chat_history():
             row['timestamp'] = str(row['timestamp'])
         result.append(row)
     return jsonify(result)
+
+# ── DEVICE REGISTRATION ──
+@app.route('/api/register-device', methods=['POST'])
+def api_register_device():
+    data = request.get_json()
+    username   = data.get('username', '').strip()
+    device_id  = data.get('device_id', '').strip()
+    public_key = data.get('public_key', '').strip()
+    label      = data.get('label', 'Unknown Device')
+    if not username or not device_id or not public_key:
+        return jsonify({'error': 'missing fields'}), 400
+    if not get_user(username):
+        return jsonify({'error': 'user not found'}), 404
+    register_device(username, device_id, public_key, label)
+    pending = len(get_pending_devices())
+    socketio.emit('device_pending', {'username': username, 'device_id': device_id, 'label': label, 'pending_count': pending})
+    return jsonify({'status': 'pending', 'message': 'Device registered. Waiting for admin approval.'})
+
+@app.route('/api/device-status', methods=['GET'])
+def api_device_status():
+    device_id = request.args.get('device_id', '')
+    if not device_id:
+        return jsonify({'status': 'unknown'})
+    device = get_device(device_id)
+    if not device:
+        return jsonify({'status': 'not_registered'})
+    return jsonify({'status': device['status'], 'username': device['username'], 'label': device['label']})
+
+@app.route('/api/devices', methods=['GET'])
+def api_devices():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
+    devices = get_all_devices()
+    result = []
+    for d in devices:
+        row = dict(d)
+        row.pop('public_key', None)
+        if row.get('created_at'): row['created_at'] = str(row['created_at'])
+        if row.get('approved_at'): row['approved_at'] = str(row['approved_at'])
+        result.append(row)
+    return jsonify(result)
+
+@app.route('/api/devices/approve', methods=['POST'])
+def api_device_approve():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
+    data = request.get_json()
+    approve_device(data['device_id'])
+    socketio.emit('device_approved', {'device_id': data['device_id']})
+    return jsonify({'success': True})
+
+@app.route('/api/devices/reject', methods=['POST'])
+def api_device_reject():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
+    data = request.get_json()
+    reject_device(data['device_id'])
+    return jsonify({'success': True})
+
+@app.route('/api/devices/delete', methods=['POST'])
+def api_device_delete():
+    if 'user' not in session:
+        return jsonify({'error': 'unauthorized'}), 401
+    data = request.get_json()
+    delete_device(data['device_id'])
+    return jsonify({'success': True})
 
 # ── MAIN ──
 if __name__ == '__main__':
