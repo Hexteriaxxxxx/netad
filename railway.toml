@@ -5,3 +5,7 @@ builder = "nixpacks"
 startCommand = "python main.py"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
+
+[variables]
+DISABLE_IP_WHITELIST = "true"
+HOST = "0.0.0.0"

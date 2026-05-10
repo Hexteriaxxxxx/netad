@@ -7,13 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
-:root {
-  --bg:#040C14;--bg2:#0A1520;--bg3:#0F1E2E;
-  --accent:#00E5A0;--red:#FF4D4D;--amber:#FFB344;
-  --text:#E8F0F8;--text2:#7A9BB8;--text3:#3D5A72;
-  --border:rgba(0,229,160,0.13);--border2:rgba(0,229,160,0.28);
-  --mono:'JetBrains Mono',monospace;--sans:'Inter',sans-serif;
-}
+:root{--bg:#040C14;--bg2:#0A1520;--bg3:#0F1E2E;--accent:#00E5A0;--red:#FF4D4D;--amber:#FFB344;--text:#E8F0F8;--text2:#7A9BB8;--text3:#3D5A72;--border:rgba(0,229,160,0.13);--border2:rgba(0,229,160,0.28);--mono:'JetBrains Mono',monospace;--sans:'Inter',sans-serif;}
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{width:100%;height:100%;overflow:hidden;}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);display:flex;animation:pageIn 0.5s ease;}
@@ -57,13 +51,13 @@ body.leaving{animation:pageOut 0.4s ease forwards;}
 .r-bracket.bl{bottom:20px;left:20px;border-width:0 0 1.5px 1.5px;}
 .r-bracket.br{bottom:20px;right:20px;border-width:0 1.5px 1.5px 0;}
 .login-card{width:100%;position:relative;z-index:1;}
-.l-logo{display:flex;align-items:center;gap:12px;margin-bottom:2rem;}
+.l-logo{display:flex;align-items:center;gap:12px;margin-bottom:1.5rem;}
 .l-logo-icon{width:42px;height:42px;border:1.5px solid var(--accent);border-radius:10px;display:flex;align-items:center;justify-content:center;background:rgba(0,229,160,0.05);flex-shrink:0;}
 .l-logo-icon svg{width:22px;height:22px;}
 .l-logo-name{font-family:var(--mono);font-size:15px;font-weight:700;color:var(--accent);letter-spacing:3px;}
 .l-logo-sub{font-size:9px;color:var(--text2);letter-spacing:2px;margin-top:3px;}
-.l-title{font-size:23px;font-weight:600;margin-bottom:3px;}
-.l-sub{font-size:11px;color:var(--text2);font-family:var(--mono);letter-spacing:0.5px;margin-bottom:1.5rem;}
+.l-title{font-size:22px;font-weight:600;margin-bottom:3px;}
+.l-sub{font-size:11px;color:var(--text2);font-family:var(--mono);letter-spacing:0.5px;margin-bottom:1.25rem;}
 .field{margin-bottom:0.85rem;}
 .field label{display:block;font-size:9px;font-family:var(--mono);color:var(--text2);letter-spacing:2px;text-transform:uppercase;margin-bottom:6px;}
 .field-wrap{position:relative;}
@@ -101,7 +95,7 @@ body.leaving{animation:pageOut 0.4s ease forwards;}
 .auth-progress{height:2px;background:rgba(0,229,160,0.1);border-radius:2px;margin-top:10px;overflow:hidden;opacity:0;transition:opacity 0.3s;}
 .auth-progress.visible{opacity:1;}
 .auth-progress-bar{height:100%;width:0%;background:var(--accent);border-radius:2px;transition:width 0.4s linear;box-shadow:0 0 8px var(--accent);}
-.l-status{margin-top:8px;text-align:center;font-size:10px;font-family:var(--mono);min-height:14px;letter-spacing:1px;transition:opacity 0.3s;}
+.l-status{margin-top:8px;text-align:center;font-size:10px;font-family:var(--mono);min-height:14px;letter-spacing:1px;}
 @keyframes shake{0%,100%{transform:translateX(0)}15%{transform:translateX(-6px)}30%{transform:translateX(6px)}45%{transform:translateX(-4px)}60%{transform:translateX(4px)}75%{transform:translateX(-2px)}90%{transform:translateX(2px)}}
 .shake{animation:shake 0.45s ease;}
 .caps-hint{font-size:9px;font-family:var(--mono);color:var(--amber);letter-spacing:1px;margin-top:4px;display:none;align-items:center;gap:4px;}
@@ -130,16 +124,14 @@ body.leaving{animation:pageOut 0.4s ease forwards;}
   <div class="r-bracket bl"></div><div class="r-bracket br"></div>
   <div class="login-card">
     <div class="l-logo">
-      <div class="l-logo-icon">
-        <svg viewBox="0 0 24 24" fill="none"><path d="M12 2L4 6v6c0 5 3.5 9.7 8 11 4.5-1.3 8-6 8-11V6L12 2z" fill="#00E5A0"/></svg>
-      </div>
+      <div class="l-logo-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2L4 6v6c0 5 3.5 9.7 8 11 4.5-1.3 8-6 8-11V6L12 2z" fill="#00E5A0"/></svg></div>
       <div><div class="l-logo-name">NETAD</div><div class="l-logo-sub">SECURITY SYSTEM</div></div>
     </div>
 
-    <!-- DEVICE REGISTRATION SECTION -->
+    <!-- REGISTER SECTION -->
     <div id="device-register-section" style="display:none">
       <div class="l-title">Register Device</div>
-      <div class="l-sub">// first time on this device — generate your key</div>
+      <div class="l-sub">// first time here — generate your key</div>
       <div class="field">
         <label>Your Username</label>
         <div class="field-wrap">
@@ -147,220 +139,183 @@ body.leaving{animation:pageOut 0.4s ease forwards;}
           <input type="text" id="reg-username" placeholder="enter your username" autocomplete="off"/>
         </div>
       </div>
-      <button class="login-btn" onclick="registerDevice()">
-        <span class="btn-text">🔐 REGISTER THIS DEVICE →</span>
-      </button>
-      <div class="l-status" id="status" style="margin-top:10px"></div>
+      <button class="login-btn" onclick="registerDevice()"><span class="btn-text">🔐 REGISTER THIS DEVICE →</span></button>
+      <div class="l-status" id="reg-status" style="margin-top:10px"></div>
       <div style="font-size:9px;color:var(--text3);font-family:var(--mono);margin-top:12px;line-height:1.8;">
-        A key pair will be generated in your browser.<br>
-        The private key never leaves this device.<br>
-        Admin approval required before you can login.
+        Private key never leaves this device.<br>Admin approval required before login.
       </div>
     </div>
 
-    <!-- DEVICE STATUS SECTION -->
+    <!-- PENDING / REJECTED STATUS SECTION -->
     <div id="device-status-section" style="display:none">
-      <div style="text-align:center;padding:2rem 0;">
+      <div style="text-align:center;padding:1.5rem 0;">
         <div style="font-size:32px;margin-bottom:1rem">🔐</div>
         <div class="l-title" style="margin-bottom:0.5rem">Device Auth</div>
         <div id="device-status-msg" style="font-family:var(--mono);font-size:11px;margin-top:1rem;line-height:2;"></div>
-        <button class="login-btn" style="margin-top:1.5rem;background:transparent;border:1px solid var(--border2);color:var(--text2)" onclick="initDevice()">
+        <button class="login-btn" style="margin-top:1rem;background:transparent;border:1px solid var(--border2);color:var(--text2);" onclick="initDevice()">
           <span class="btn-text">CHECK STATUS ↺</span>
         </button>
+        <!-- Update IP button — shown when IP may have changed -->
+        <button class="login-btn" id="update-ip-btn" style="margin-top:0.5rem;background:rgba(255,179,68,0.1);border:1px solid rgba(255,179,68,0.3);color:var(--amber);display:none;" onclick="updateMyIP()">
+          <span class="btn-text">📍 UPDATE MY IP →</span>
+        </button>
+        <div id="update-ip-status" style="font-size:10px;font-family:var(--mono);margin-top:8px;min-height:14px;color:var(--text2);"></div>
       </div>
     </div>
 
-    <!-- NORMAL LOGIN SECTION -->
+    <!-- LOGIN SECTION -->
     <div id="login-section" style="display:none">
-    <div class="field">
-      <label>Username</label>
-      <div class="field-wrap">
-        <span class="field-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
-        <input type="text" id="u" placeholder="enter username" autocomplete="off" spellcheck="false"/>
+      <div class="l-title">Access Control</div>
+      <div class="l-sub">// authenticate to continue</div>
+      <div class="field">
+        <label>Username</label>
+        <div class="field-wrap">
+          <span class="field-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
+          <input type="text" id="u" placeholder="enter username" autocomplete="off" spellcheck="false"/>
+        </div>
       </div>
-    </div>
-    <div class="field">
-      <label>Password</label>
-      <div class="field-wrap">
-        <span class="field-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
-        <input type="password" id="p" placeholder="enter password" autocomplete="current-password"/>
-        <span class="pw-toggle" id="pw-toggle">
-          <svg id="pw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-        </span>
+      <div class="field">
+        <label>Password</label>
+        <div class="field-wrap">
+          <span class="field-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+          <input type="password" id="p" placeholder="enter password" autocomplete="current-password"/>
+          <span class="pw-toggle" id="pw-toggle">
+            <svg id="pw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </span>
+        </div>
+        <div class="caps-hint" id="caps-hint"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 12h5v8h10v-8h5L12 2z"/></svg>CAPS LOCK IS ON</div>
       </div>
-      <div class="caps-hint" id="caps-hint"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 12h5v8h10v-8h5L12 2z"/></svg>CAPS LOCK IS ON</div>
+      <button class="login-btn" id="login-btn" onclick="doLogin()">
+        <div class="spinner"></div><span class="btn-text">AUTHENTICATE →</span>
+      </button>
+      <div class="pipeline" id="pipeline"></div>
+      <div class="auth-progress" id="auth-progress"><div class="auth-progress-bar" id="auth-bar"></div></div>
+      <div class="l-status" id="status"></div>
     </div>
-    <button class="login-btn" id="login-btn" onclick="doLogin()">
-      <div class="spinner"></div><span class="btn-text">AUTHENTICATE →</span>
-    </button>
-    <div class="pipeline" id="pipeline"></div>
-    <div class="auth-progress" id="auth-progress"><div class="auth-progress-bar" id="auth-bar"></div></div>
-    <div class="l-status" id="status"></div>
-    </div><!-- end login-section -->
   </div>
 </div>
 
 <script>
-// ── DEVICE AUTH (Web Crypto API + IndexedDB) ──
+// ══════════════════════════════════════════
+// WEB CRYPTO + INDEXEDDB DEVICE AUTH
+// ══════════════════════════════════════════
 let _deviceKeyPair = null;
 let _deviceId = localStorage.getItem('netad_device_id');
+let _deviceUsername = null;
 
-function openIDB() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open('NETAD_Keys', 1);
-    req.onupgradeneeded = e => e.target.result.createObjectStore('keys');
-    req.onsuccess = e => resolve(e.target.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-async function idbGet(key) {
-  const db = await openIDB();
-  return new Promise((resolve, reject) => {
-    const req = db.transaction('keys','readonly').objectStore('keys').get(key);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-async function idbSet(key, value) {
-  const db = await openIDB();
-  return new Promise((resolve, reject) => {
-    const req = db.transaction('keys','readwrite').objectStore('keys').put(value, key);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
-}
+function openIDB(){return new Promise((res,rej)=>{const r=indexedDB.open('NETAD_Keys',1);r.onupgradeneeded=e=>e.target.result.createObjectStore('keys');r.onsuccess=e=>res(e.target.result);r.onerror=()=>rej(r.error);});}
+async function idbGet(key){const db=await openIDB();return new Promise((res,rej)=>{const r=db.transaction('keys','readonly').objectStore('keys').get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
+async function idbSet(key,value){const db=await openIDB();return new Promise((res,rej)=>{const r=db.transaction('keys','readwrite').objectStore('keys').put(value,key);r.onsuccess=()=>res();r.onerror=()=>rej(r.error);});}
 
-async function initDevice() {
-  try {
-    _deviceKeyPair = await idbGet('device_keypair');
-    _deviceId = localStorage.getItem('netad_device_id');
-
-    if (!_deviceKeyPair || !_deviceId) {
-      showRegistrationUI();
-      return;
-    }
-
-    // Check device status with server
-    const res = await fetch('/api/device-status?device_id=' + _deviceId);
-    const data = await res.json();
-
-    if (data.status === 'approved') {
-      showLoginUI();
-    } else if (data.status === 'pending') {
-      showStatusMessage('pending', data.username);
-    } else if (data.status === 'rejected') {
-      showStatusMessage('rejected', data.username);
+async function initDevice(){
+  try{
+    _deviceKeyPair=await idbGet('device_keypair');
+    _deviceId=localStorage.getItem('netad_device_id');
+    if(!_deviceKeyPair||!_deviceId){showSection('register');return;}
+    const res=await fetch('/api/device-status?device_id='+_deviceId);
+    const data=await res.json();
+    _deviceUsername=data.username||null;
+    if(data.status==='approved'){
+      showSection('login');
+    } else if(data.status==='pending'){
+      showStatusMsg('pending',data.username);
+      document.getElementById('update-ip-btn').style.display='flex';
+    } else if(data.status==='rejected'){
+      showStatusMsg('rejected',data.username);
     } else {
-      // Device not in DB (maybe DB was reset) — re-register
-      showRegistrationUI();
+      showSection('register');
     }
-  } catch(e) {
-    // Server unreachable — show login anyway
-    showLoginUI();
+  }catch(e){
+    // Server unreachable — show login
+    showSection('login');
   }
 }
 
-function showLoginUI() {
-  document.getElementById('device-register-section').style.display = 'none';
-  document.getElementById('device-status-section').style.display = 'none';
-  document.getElementById('login-section').style.display = 'block';
+function showSection(name){
+  ['device-register-section','device-status-section','login-section'].forEach(id=>{
+    document.getElementById(id).style.display='none';
+  });
+  const map={register:'device-register-section',status:'device-status-section',login:'login-section'};
+  document.getElementById(map[name]).style.display='block';
 }
 
-function showRegistrationUI() {
-  document.getElementById('login-section').style.display = 'none';
-  document.getElementById('device-status-section').style.display = 'none';
-  document.getElementById('device-register-section').style.display = 'block';
-}
-
-function showStatusMessage(status, username) {
-  document.getElementById('login-section').style.display = 'none';
-  document.getElementById('device-register-section').style.display = 'none';
-  const sec = document.getElementById('device-status-section');
-  sec.style.display = 'block';
-  if (status === 'pending') {
-    document.getElementById('device-status-msg').innerHTML = `<span style="color:var(--amber)">⏳ DEVICE PENDING APPROVAL</span><br><span style="font-size:10px;color:var(--text2)">Registered as <b>${username}</b>. Ask your admin to approve this device.</span>`;
+function showStatusMsg(status,username){
+  showSection('status');
+  const msg=document.getElementById('device-status-msg');
+  if(status==='pending'){
+    msg.innerHTML=`<span style="color:var(--amber)">⏳ PENDING APPROVAL</span><br><span style="font-size:10px;color:var(--text2)">Registered as <b>${username||''}</b>.<br>Ask your admin to approve this device.</span>`;
+    document.getElementById('update-ip-btn').style.display='flex';
   } else {
-    document.getElementById('device-status-msg').innerHTML = `<span style="color:var(--red)">❌ DEVICE REJECTED</span><br><span style="font-size:10px;color:var(--text2)">This device was rejected. Contact your admin.</span>`;
+    msg.innerHTML=`<span style="color:var(--red)">❌ DEVICE REJECTED</span><br><span style="font-size:10px;color:var(--text2)">This device was rejected by admin.</span>`;
+    document.getElementById('update-ip-btn').style.display='none';
   }
 }
 
-async function registerDevice() {
-  const username = document.getElementById('reg-username').value.trim();
-  const label = navigator.userAgent.substring(0, 60);
-  if (!username) { setStatus('// enter your username first', 'var(--red)'); return; }
+async function registerDevice(){
+  const username=document.getElementById('reg-username').value.trim();
+  if(!username){setRegStatus('// enter your username first','var(--red)');return;}
+  setRegStatus('// generating key pair...','var(--text2)');
+  try{
+    const kp=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},false,['sign','verify']);
+    const pubJwk=await crypto.subtle.exportKey('jwk',kp.publicKey);
+    const did=crypto.randomUUID();
+    await idbSet('device_keypair',kp);
+    localStorage.setItem('netad_device_id',did);
+    _deviceKeyPair=kp;_deviceId=did;_deviceUsername=username;
+    const res=await fetch('/api/register-device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,device_id:did,public_key:JSON.stringify(pubJwk),label:navigator.userAgent.substring(0,60)})});
+    const data=await res.json();
+    if(data.error){setRegStatus('// '+data.error,'var(--red)');}
+    else if(data.status==='approved'){showSection('login');}
+    else{showStatusMsg('pending',username);}
+  }catch(e){setRegStatus('// registration failed: '+e.message,'var(--red)');}
+}
 
-  setStatus('// generating device key pair...', 'var(--text2)');
-
-  try {
-    // Generate ECDSA P-256 key pair — private key is NON-EXTRACTABLE
-    const keyPair = await crypto.subtle.generateKey(
-      { name: 'ECDSA', namedCurve: 'P-256' },
-      false, // private key cannot be exported!
-      ['sign', 'verify']
-    );
-
-    // Export public key as JWK (public key CAN be exported)
-    const publicKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
-
-    // Generate device ID
-    const deviceId = crypto.randomUUID();
-
-    // Save to IndexedDB and localStorage
-    await idbSet('device_keypair', keyPair);
-    localStorage.setItem('netad_device_id', deviceId);
-    _deviceKeyPair = keyPair;
-    _deviceId = deviceId;
-
-    // Register with server
-    const res = await fetch('/api/register-device', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ username, device_id: deviceId, public_key: JSON.stringify(publicKeyJwk), label })
-    });
-    const data = await res.json();
-
-    if (data.error) {
-      setStatus('// ' + data.error, 'var(--red)');
-    } else if (data.status === 'approved') {
-      showLoginUI();
+async function updateMyIP(){
+  if(!_deviceKeyPair||!_deviceId){setUpdateStatus('// no device key found','var(--red)');return;}
+  setUpdateStatus('// signing request...','var(--text2)');
+  try{
+    const message=`update-ip:${_deviceId}:${Date.now()}`;
+    const encoded=new TextEncoder().encode(message);
+    const sigBuf=await crypto.subtle.sign({name:'ECDSA',hash:{name:'SHA-256'}},_deviceKeyPair.privateKey,encoded);
+    const sigB64=btoa(String.fromCharCode(...new Uint8Array(sigBuf)));
+    const username=_deviceUsername||localStorage.getItem('netad_username')||'';
+    if(!username){setUpdateStatus('// username unknown — re-register','var(--red)');return;}
+    const res=await fetch('/api/update-ip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,device_id:_deviceId,device_signature:sigB64,device_message:message})});
+    const data=await res.json();
+    if(data.success){
+      setUpdateStatus(`✓ IP updated to ${data.new_ip}. Try logging in now.`,'var(--accent)');
+      setTimeout(()=>initDevice(),1500);
     } else {
-      showStatusMessage('pending', username);
+      setUpdateStatus('// '+( data.error||'update failed'),'var(--red)');
     }
-  } catch(e) {
-    setStatus('// device registration failed: ' + e.message, 'var(--red)');
-  }
+  }catch(e){setUpdateStatus('// error: '+e.message,'var(--red)');}
 }
 
-async function signLoginRequest(username, sessionToken) {
-  if (!_deviceKeyPair || !_deviceId) return null;
-  try {
-    const message = `${username}:${sessionToken}`;
-    const encoded = new TextEncoder().encode(message);
-    const sigBuffer = await crypto.subtle.sign(
-      { name: 'ECDSA', hash: { name: 'SHA-256' } },
-      _deviceKeyPair.privateKey,
-      encoded
-    );
-    const sigBase64 = btoa(String.fromCharCode(...new Uint8Array(sigBuffer)));
-    return { device_id: _deviceId, device_signature: sigBase64, device_message: message };
-  } catch(e) {
-    console.error('Signing error:', e);
-    return null;
-  }
+function setRegStatus(msg,color){const el=document.getElementById('reg-status');el.style.color=color||'var(--text2)';el.textContent=msg;}
+function setUpdateStatus(msg,color){const el=document.getElementById('update-ip-status');el.style.color=color||'var(--text2)';el.textContent=msg;}
+
+async function signLoginRequest(username,sessionToken){
+  if(!_deviceKeyPair||!_deviceId)return null;
+  try{
+    const message=`${username}:${sessionToken}`;
+    const encoded=new TextEncoder().encode(message);
+    const sigBuf=await crypto.subtle.sign({name:'ECDSA',hash:{name:'SHA-256'}},_deviceKeyPair.privateKey,encoded);
+    const sigB64=btoa(String.fromCharCode(...new Uint8Array(sigBuf)));
+    return{device_id:_deviceId,device_signature:sigB64,device_message:message};
+  }catch(e){return null;}
 }
 
 // ── PASSWORD TOGGLE ──
-const pwInput=document.getElementById('p'),pwToggle=document.getElementById('pw-toggle'),pwIcon=document.getElementById('pw-icon');
-let pwVisible=false;
-pwToggle.addEventListener('click',()=>{
-  pwVisible=!pwVisible;pwInput.type=pwVisible?'text':'password';
-  pwIcon.innerHTML=pwVisible?'<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>':'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
-});
-document.getElementById('p').addEventListener('keyup',e=>{
-  document.getElementById('caps-hint').classList.toggle('show',e.getModifierState&&e.getModifierState('CapsLock'));
+document.addEventListener('DOMContentLoaded',()=>{
+  const pwInput=document.getElementById('p');
+  if(!pwInput)return;
+  const pwToggle=document.getElementById('pw-toggle'),pwIcon=document.getElementById('pw-icon');
+  let pwVisible=false;
+  pwToggle.addEventListener('click',()=>{pwVisible=!pwVisible;pwInput.type=pwVisible?'text':'password';pwIcon.innerHTML=pwVisible?'<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>':'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';});
+  pwInput.addEventListener('keyup',e=>{document.getElementById('caps-hint').classList.toggle('show',e.getModifierState&&e.getModifierState('CapsLock'));});
 });
 
-// ── THREE.JS GLOBE ──
+// ── GLOBE ──
 const canvas=document.getElementById('globe-canvas'),leftEl=document.getElementById('left-panel');
 const renderer=new THREE.WebGLRenderer({canvas,antialias:true});
 renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));renderer.setClearColor(0x02070F,1);
@@ -376,7 +331,7 @@ const gM=new THREE.LineBasicMaterial({color:0x00E5A0,transparent:true,opacity:0.
 const gF=new THREE.LineBasicMaterial({color:0x00E5A0,transparent:true,opacity:0.035});
 for(let lat=-80;lat<=80;lat+=20){const pts=[];for(let lng=0;lng<=361;lng+=2)pts.push(ll(lat,lng,1.001));globeGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),lat%40===0?gM:gF));}
 for(let lng=0;lng<360;lng+=20){const pts=[];for(let lat=-90;lat<=90;lat+=2)pts.push(ll(lat,lng,1.001));globeGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),lng%40===0?gM:gF));}
-const cities=[{lat:40.7,lng:-74},{lat:51.5,lng:-0.1},{lat:35.7,lng:139.7},{lat:48.9,lng:2.3},{lat:-33.9,lng:151.2},{lat:37.8,lng:-122.4},{lat:55.8,lng:37.6},{lat:39.9,lng:116.4},{lat:19.4,lng:-99.1},{lat:-23.5,lng:-46.6},{lat:28.6,lng:77.2},{lat:1.3,lng:103.8},{lat:41,lng:28.9},{lat:-1.3,lng:36.8},{lat:31.2,lng:121.5},{lat:34,lng:-118.2},{lat:52.5,lng:13.4},{lat:59.9,lng:30.3},{lat:25.2,lng:55.3},{lat:43.7,lng:-79.4}];
+const cities=[{lat:40.7,lng:-74},{lat:51.5,lng:-0.1},{lat:35.7,lng:139.7},{lat:48.9,lng:2.3},{lat:-33.9,lng:151.2},{lat:37.8,lng:-122.4},{lat:55.8,lng:37.6},{lat:39.9,lng:116.4},{lat:19.4,lng:-99.1},{lat:-23.5,lng:-46.6},{lat:28.6,lng:77.2},{lat:1.3,lng:103.8},{lat:41,lng:28.9},{lat:-1.3,lng:36.8},{lat:31.2,lng:121.5}];
 const dc2=document.createElement('canvas');dc2.width=dc2.height=48;
 const dctx=dc2.getContext('2d'),dg=dctx.createRadialGradient(24,24,0,24,24,24);
 dg.addColorStop(0,'rgba(0,229,160,1)');dg.addColorStop(0.25,'rgba(0,229,160,0.6)');dg.addColorStop(0.6,'rgba(0,229,160,0.15)');dg.addColorStop(1,'rgba(0,229,160,0)');
@@ -394,9 +349,7 @@ const evtPool=[
   {kind:'threat',label:'THREAT DETECTED',cls:'evt-threat',lat:51.5,lng:-0.1},{kind:'threat',label:'BRUTE FORCE',cls:'evt-threat',lat:55.8,lng:37.6},
   {kind:'blocked',label:'IP BLOCKED',cls:'evt-blocked',lat:39.9,lng:116.4},{kind:'node',label:'AUTH VERIFIED',cls:'evt-node',lat:40.7,lng:-74},
   {kind:'threat',label:'PORT SCAN',cls:'evt-threat',lat:35.7,lng:139.7},{kind:'blocked',label:'RATE LIMITED',cls:'evt-blocked',lat:28.6,lng:77.2},
-  {kind:'node',label:'LAYER ACTIVE',cls:'evt-node',lat:1.3,lng:103.8},{kind:'threat',label:'SQL INJECT',cls:'evt-threat',lat:-23.5,lng:-46.6},
-  {kind:'blocked',label:'GEO BLOCKED',cls:'evt-blocked',lat:31.2,lng:121.5},{kind:'node',label:'HASH VERIFIED',cls:'evt-node',lat:37.8,lng:-122.4},
-  {kind:'threat',label:'XSS ATTEMPT',cls:'evt-threat',lat:48.9,lng:2.3},{kind:'threat',label:'DDoS ALERT',cls:'evt-threat',lat:41,lng:28.9},
+  {kind:'node',label:'DEVICE VERIFIED',cls:'evt-node',lat:1.3,lng:103.8},{kind:'threat',label:'UNAPPROVED DEVICE',cls:'evt-threat',lat:-23.5,lng:-46.6},
 ];
 let activeEvts=[],threatCnt=3,blockedCnt=2;
 const evtsEl=document.getElementById('globe-events');
@@ -426,11 +379,8 @@ function updateEvts(){
 function animate(){requestAnimationFrame(animate);if(autoSpin)tRotY+=0.0018;cRotX+=(tRotX-cRotX)*0.07;cRotY+=(tRotY-cRotY)*0.07;globeGroup.rotation.x=cRotX;globeGroup.rotation.y=cRotY;updateEvts();renderer.render(scene,camera);}
 animate();
 
-// ── INIT DEVICE CHECK ON PAGE LOAD ──
-initDevice();
-
-// ── PIPELINE UI ──
-const LAYERS=['Rate Limiting','Password Verification','Request Timestamp','IP Access Control','Digital Signature','Session Management'];
+// ── PIPELINE ──
+const LAYERS=['Rate Limiting','Password Verification','Request Timestamp','IP Access Control','Device Signature','Session Management'];
 function buildPipeline(){
   const el=document.getElementById('pipeline');el.innerHTML='';
   LAYERS.forEach((name,i)=>{
@@ -449,12 +399,12 @@ function setPipeStep(i,state){
   else if(state==='SKIP'){dot.className='pipe-dot';res.className='pipe-result pipe-skip';res.textContent='SKIP';}
 }
 
-// ── LOGIN (CSRF-aware) ──
+// ── LOGIN ──
 let busy=false;
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&!busy)doLogin();});
-function setStatus(msg,color){const el=document.getElementById('status');el.style.color=color||'var(--text2)';el.textContent=msg;}
+function setStatus(msg,color){const el=document.getElementById('status');if(!el)return;el.style.color=color||'var(--text2)';el.textContent=msg;}
 function shakeCard(){const card=document.querySelector('.login-card');card.classList.remove('shake');void card.offsetWidth;card.classList.add('shake');}
-function clearErrors(){document.getElementById('u').classList.remove('error');document.getElementById('p').classList.remove('error');}
+function clearErrors(){const u=document.getElementById('u'),p=document.getElementById('p');if(u)u.classList.remove('error');if(p)p.classList.remove('error');}
 
 async function doLogin(){
   if(busy)return;
@@ -464,34 +414,16 @@ async function doLogin(){
   const prog=document.getElementById('auth-progress');
   const bar=document.getElementById('auth-bar');
   clearErrors();
-  if(!u||!p){
-    if(!u)document.getElementById('u').classList.add('error');
-    if(!p)document.getElementById('p').classList.add('error');
-    setStatus('// enter all credentials','var(--red)');shakeCard();return;
-  }
-  busy=true;btn.classList.add('loading');btn.disabled=true;
-  btn.querySelector('.btn-text').textContent='AUTHENTICATING...';
+  if(!u||!p){if(!u)document.getElementById('u').classList.add('error');if(!p)document.getElementById('p').classList.add('error');setStatus('// enter all credentials','var(--red)');shakeCard();return;}
+  busy=true;btn.classList.add('loading');btn.disabled=true;btn.querySelector('.btn-text').textContent='AUTHENTICATING...';
   setStatus('// fetching security token...','var(--text2)');
 
-  // ── STEP 1: Fetch CSRF token ──
   let csrf_token='';
-  try{
-    const csrfRes=await fetch('/api/csrf');
-    const csrfData=await csrfRes.json();
-    csrf_token=csrfData.csrf_token||'';
-  }catch(e){
-    setStatus('// server unreachable','var(--red)');shakeCard();
-    btn.classList.remove('loading');btn.disabled=false;btn.querySelector('.btn-text').textContent='AUTHENTICATE →';
-    busy=false;return;
-  }
+  try{const r=await fetch('/api/csrf');csrf_token=(await r.json()).csrf_token||'';}
+  catch(e){setStatus('// server unreachable','var(--red)');shakeCard();btn.classList.remove('loading');btn.disabled=false;btn.querySelector('.btn-text').textContent='AUTHENTICATE →';busy=false;return;}
 
-  // ── STEP 2: Fetch one-time session token ──
   let session_token='';
-  try{
-    const tokRes=await fetch('/api/token');
-    const tokData=await tokRes.json();
-    session_token=tokData.token||'';
-  }catch(e){}
+  try{session_token=(await(await fetch('/api/token')).json()).token||'';}catch(e){}
 
   buildPipeline();
   document.getElementById('pipeline').classList.add('open');
@@ -500,52 +432,40 @@ async function doLogin(){
   animateNext();
   const stepTimer=setInterval(animateNext,320);
   prog.classList.add('visible');
-  bar.style.transition='width 2s cubic-bezier(0.4,0,0.2,1)';
-  bar.style.width='80%';
+  bar.style.transition='width 2s cubic-bezier(0.4,0,0.2,1)';bar.style.width='80%';
   setStatus('// running 6-layer consensus...','var(--text2)');
 
+  // Save username for IP update later
+  localStorage.setItem('netad_username', u);
+
   try{
-    // ── STEP 3: Submit login with CSRF token ──
-    const res=await fetch('/api/login',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({username:u,password:p,csrf_token,session_token,...(await signLoginRequest(u,session_token)||{})}),
-    });
+    const deviceSig=await signLoginRequest(u,session_token)||{};
+    const res=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p,csrf_token,session_token,...deviceSig})});
     const data=await res.json();
     clearInterval(stepTimer);
     if(data.steps){
-      data.steps.forEach((step,i)=>{
-        const idx=LAYERS.findIndex(l=>l===step.layer);
-        if(idx>=0)setPipeStep(idx,step.result);
-      });
+      data.steps.forEach((step,i)=>{const idx=LAYERS.findIndex(l=>l===step.layer);if(idx>=0)setPipeStep(idx,step.result);});
       for(let i=data.steps.length;i<LAYERS.length;i++){const row=document.getElementById('pipe-'+i);if(row)row.classList.add('visible');}
     }
-    bar.style.transition='width 0.3s ease';
-    bar.style.width=data.granted?'100%':'30%';
+    bar.style.transition='width 0.3s ease';bar.style.width=data.granted?'100%':'30%';
     if(data.granted){
       setStatus('// access granted — welcome, '+data.user,'var(--accent)');
       setTimeout(()=>{prog.style.opacity='0';document.body.classList.add('leaving');setTimeout(()=>{window.location.href='/dashboard';},400);},1000);
-    }else{
+    } else {
       bar.style.background='var(--red)';
       setStatus('// '+(data.error||'authentication failed'),'var(--red)');
       document.getElementById('p').classList.add('error');shakeCard();
-      setTimeout(()=>{
-        prog.classList.remove('visible');bar.style.width='0%';bar.style.background='var(--accent)';
-        btn.classList.remove('loading');btn.disabled=false;btn.querySelector('.btn-text').textContent='AUTHENTICATE →';
-        busy=false;
-      },900);
+      setTimeout(()=>{prog.classList.remove('visible');bar.style.width='0%';bar.style.background='var(--accent)';btn.classList.remove('loading');btn.disabled=false;btn.querySelector('.btn-text').textContent='AUTHENTICATE →';busy=false;},900);
     }
   }catch(err){
-    clearInterval(stepTimer);
-    bar.style.background='var(--red)';
-    setStatus('// server unreachable — is Flask running?','var(--red)');shakeCard();
-    setTimeout(()=>{
-      prog.classList.remove('visible');bar.style.width='0%';bar.style.background='var(--accent)';
-      btn.classList.remove('loading');btn.disabled=false;btn.querySelector('.btn-text').textContent='AUTHENTICATE →';
-      busy=false;
-    },900);
+    clearInterval(stepTimer);bar.style.background='var(--red)';
+    setStatus('// server unreachable','var(--red)');shakeCard();
+    setTimeout(()=>{prog.classList.remove('visible');bar.style.width='0%';bar.style.background='var(--accent)';btn.classList.remove('loading');btn.disabled=false;btn.querySelector('.btn-text').textContent='AUTHENTICATE →';busy=false;},900);
   }
 }
+
+// ── INIT ──
+initDevice();
 </script>
 </body>
 </html>
