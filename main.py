@@ -14,7 +14,7 @@ from database import (
     register_device, get_device, get_all_devices,
     approve_device, reject_device, delete_device, get_pending_devices,
     is_whitelisted, is_blacklisted, get_all_failed_count,
-    claim_token, get_device_public_key
+    claim_token, get_device_public_key, clear_rate_limit
 )
 from dotenv import load_dotenv
 import os
@@ -194,6 +194,11 @@ def node6_rate_limit(payload):
     if is_blacklisted(ip):
         print(f"Node 6 FAIL: {ip} blacklisted")
         return 'FAIL'
+    # Whitelisted IPs bypass rate limiting — already trusted via Node 3 + Node 4
+    if is_whitelisted(ip):
+        count = get_all_failed_count(ip)
+        print(f"Node 6 PASS: {ip} whitelisted — rate limit skipped ({count} prev failures)")
+        return 'PASS'
     count = get_all_failed_count(ip)
     if count >= MAX:
         add_to_blacklist(ip, 'temporary', 1800)
@@ -391,10 +396,21 @@ def api_blacklist_add():
     add_to_blacklist(data['ip'], data.get('type', 'temporary'))
     return jsonify({'success': True})
 
+@app.route('/api/clear-rate-limit', methods=['POST'])
+def api_clear_rate_limit():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    ip = request.get_json().get('ip', '')
+    if not ip: return jsonify({'error': 'missing ip'}), 400
+    clear_rate_limit(ip)
+    socketio.emit('guard_action', {'action': 'clear_rate_limit', 'ip': ip})
+    return jsonify({'success': True})
+
 @app.route('/api/blacklist/forgive', methods=['POST'])
 def api_blacklist_forgive():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    forgive_ip(request.get_json()['ip'])
+    ip = request.get_json()['ip']
+    forgive_ip(ip)
+    clear_rate_limit(ip)  # also wipe failed attempt logs so they can retry
     return jsonify({'success': True})
 
 @app.route('/api/whitelist')
@@ -483,9 +499,16 @@ def api_chat():
         "You are NETAD Guard, an AI security officer for the NETAD multi-layer camera security system. "
         "You have real-time access to login logs, AI anomaly alerts, node status, device approvals, blacklist, whitelist, and active sessions. "
         "You speak professionally and concisely. "
-        "When asked to perform an action, include this in your reply:\n"
+        "When asked to perform an action, you MUST include this JSON block in your reply — do not just describe it, actually include it:\n"
         "ACTION:{\"action\": \"block_ip\", \"ip\": \"x.x.x.x\"}\n"
-        "Available actions: block_ip, forgive_ip, kick_session, add_whitelist, remove_whitelist.\n\n"
+        "Available actions and when to use them:\n"
+        "  block_ip — block an IP address (requires: ip)\n"
+        "  forgive_ip — remove IP from blacklist (requires: ip)\n"
+        "  clear_rate_limit — clear failed login count for an IP so they can try again (requires: ip)\n"
+        "  kick_session — force logout a user (requires: username)\n"
+        "  add_whitelist — add IP to whitelist (requires: ip, label)\n"
+        "  remove_whitelist — remove IP from whitelist (requires: ip)\n"
+        "When a user says 'let X in' or 'clear rate limit for X', use clear_rate_limit with their IP from the logs.\n\n"
         + _get_system_context()
     )}]
     for msg in chat_history[-16:]:
@@ -529,6 +552,10 @@ def _execute_action(reply: str) -> dict:
         elif act == 'add_whitelist' and ip:
             add_to_whitelist(ip, action.get('label', 'Guard approved'))
             return {'executed': 'add_whitelist', 'ip': ip}
+        elif act == 'clear_rate_limit' and ip:
+            clear_rate_limit(ip)
+            socketio.emit('guard_action', {'action': 'clear_rate_limit', 'ip': ip})
+            return {'executed': 'clear_rate_limit', 'ip': ip}
         elif act == 'remove_whitelist' and ip:
             remove_from_whitelist(ip)
             return {'executed': 'remove_whitelist', 'ip': ip}

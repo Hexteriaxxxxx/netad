@@ -395,7 +395,7 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
           <span onclick="setChatInput('Show all pending devices')">pending devices</span>
           <span onclick="setChatInput('Who is currently online?')">who\'s online</span>
           <span onclick="setChatInput('Show recent suspicious activity')">suspicious activity</span>
-          <span onclick="setChatInput('Show current node status')">node status</span>
+          <span onclick="setChatInput('Clear rate limit for [IP]')">clear rate limit</span>
         </div>
       </div>
     </div>
@@ -549,8 +549,8 @@ async function loadMetrics(){
 loadMetrics();
 
 // ── LOGS ──
-function fmtTs(ts){if(!ts)return'—';try{return new Date(ts).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});}catch{return ts.substring(11,19)||'—';}}
-function fmtDate(ts){if(!ts)return'—';try{return new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric'});}catch{return'—';}}
+function fmtTs(ts){if(!ts)return'—';try{const d=new Date(ts.includes('T')||ts.endsWith('Z')?ts:ts.replace(' ','T')+'Z');return d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});}catch{return ts.substring(11,19)||'—';}}
+function fmtDate(ts){if(!ts)return'—';try{const d=new Date(ts.includes('T')||ts.endsWith('Z')?ts:ts.replace(' ','T')+'Z');return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});}catch{return'—';}}
 async function loadLogs(){
   try{
     const logs=await fetch('/api/logs').then(r=>r.json());

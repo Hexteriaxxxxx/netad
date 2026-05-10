@@ -390,6 +390,14 @@ def delete_device(device_id):
         cur = get_cursor(conn)
         cur.execute("DELETE FROM device_keys WHERE device_id = %s", (device_id,))
 
+def clear_rate_limit(ip):
+    """Clear DENIED/SUSPICIOUS logs and blacklist entry for an IP — resets rate limit."""
+    with get_db() as conn:
+        cur = get_cursor(conn)
+        cur.execute("DELETE FROM logs WHERE ip = %s AND result IN ('DENIED', 'SUSPICIOUS')", (ip,))
+        cur.execute("DELETE FROM blacklist WHERE ip = %s", (ip,))
+    return True
+
 # ================================================
 # TEST CONNECTION
 # ================================================
