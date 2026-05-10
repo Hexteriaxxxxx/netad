@@ -549,7 +549,7 @@ async function loadMetrics(){
 loadMetrics();
 
 // ── LOGS ──
-function fmtTs(ts){if(!ts)return'—';try{const d=new Date(ts.includes('T')||ts.endsWith('Z')?ts:ts.replace(' ','T')+'Z');return d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});}catch{return ts.substring(11,19)||'—';}}
+function fmtTs(ts){if(!ts)return'—';try{const d=new Date(ts.includes('T')||ts.endsWith('Z')?ts:ts.replace(' ','T')+'Z');return d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true});}catch{return ts.substring(11,19)||'—';}}
 function fmtDate(ts){if(!ts)return'—';try{const d=new Date(ts.includes('T')||ts.endsWith('Z')?ts:ts.replace(' ','T')+'Z');return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});}catch{return'—';}}
 async function loadLogs(){
   try{
