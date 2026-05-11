@@ -5,7 +5,7 @@ from flask_socketio import SocketIO, emit
 from werkzeug.middleware.proxy_fix import ProxyFix
 from block import Block
 from database import (
-    add_log, get_logs, get_sessions, delete_session,
+    add_log, get_logs, get_logs_today, get_sessions, delete_session,
     get_blacklist, add_to_blacklist, forgive_ip,
     get_whitelist, add_to_whitelist, remove_from_whitelist,
     get_ai_logs, create_session, update_session_heartbeat,
@@ -45,11 +45,11 @@ socketio = SocketIO(app, cors_allowed_origins=ALLOWED_ORIGIN)
 # ── SECURITY HEADERS ──
 @app.after_request
 def security_headers(response):
-    response.headers['X-Frame-Options']        = 'DENY'
-    response.headers['X-Content-Type-Options']  = 'nosniff'
-    response.headers['X-XSS-Protection']        = '1; mode=block'
-    response.headers['Referrer-Policy']         = 'strict-origin-when-cross-origin'
-    response.headers['Permissions-Policy']      = 'camera=(), microphone=(), geolocation=()'
+    response.headers['X-Frame-Options']       = 'DENY'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-XSS-Protection']      = '1; mode=block'
+    response.headers['Referrer-Policy']        = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy']     = 'camera=(), microphone=(), geolocation=()'
     return response
 
 # ── GLOBAL ERROR HANDLER ──
@@ -62,8 +62,6 @@ def handle_error(e):
 # ── SOCKETIO AUTH ──
 @socketio.on('connect')
 def on_socketio_connect():
-    # Allow connect for login page (needed for login status updates)
-    # Sensitive events are protected individually
     pass
 
 @socketio.on('subscribe_dashboard')
@@ -226,7 +224,6 @@ def node6_rate_limit(payload):
     if is_blacklisted(ip):
         print(f"Node 6 FAIL: {ip} blacklisted")
         return 'FAIL'
-    # Whitelisted IPs bypass rate limiting — already trusted via Node 3 + Node 4
     if is_whitelisted(ip):
         count = get_all_failed_count(ip)
         print(f"Node 6 PASS: {ip} whitelisted — rate limit skipped ({count} prev failures)")
@@ -326,7 +323,7 @@ def logout():
     set_consensus_state(False)
     return redirect(url_for('index'))
 
-# ── PUBLIC ENDPOINT RATE LIMITER ──
+# ── PUBLIC RATE LIMITER ──
 _public_rate: dict = {}
 _public_rate_lock = threading.Lock()
 
@@ -411,7 +408,7 @@ def login():
         user_data = get_user(username)
         role = user_data['role'] if user_data else 'Member'
         sess_token = secrets.token_hex(32)
-        delete_session(username)  # Kill any existing session first
+        delete_session(username)
         create_session(username, client_ip, role, sess_token)
         session['user'] = username
         session['token'] = sess_token
@@ -431,19 +428,21 @@ def node_status():
     except Exception:
         db_ok = False
     return jsonify({
-        'password':     db_ok,
-        'timestamp':    True,
-        'ip_whitelist': db_ok,
-        'digital_sig':  True,
-        'session_token':db_ok,
-        'rate_limit':   db_ok
+        'password':      db_ok,
+        'timestamp':     True,
+        'ip_whitelist':  db_ok,
+        'digital_sig':   True,
+        'session_token': db_ok,
+        'rate_limit':    db_ok,
     })
 
+# ── LOGS — today only for "Attempts Today" metric ──
 @app.route('/api/logs')
 def api_logs():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_logs(50)])
+    return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_logs_today(50)])
 
+# ── BLACKLIST ──
 @app.route('/api/blacklist')
 def api_blacklist():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
@@ -461,15 +460,6 @@ def api_blacklist_add():
     add_to_blacklist(data['ip'], data.get('type', 'temporary'))
     return jsonify({'success': True})
 
-@app.route('/api/clear-rate-limit', methods=['POST'])
-def api_clear_rate_limit():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    ip = request.get_json().get('ip', '')
-    if not ip: return jsonify({'error': 'missing ip'}), 400
-    clear_rate_limit(ip)
-    socketio.emit('guard_action', {'action': 'clear_rate_limit', 'ip': ip})
-    return jsonify({'success': True})
-
 @app.route('/api/blacklist/forgive', methods=['POST'])
 def api_blacklist_forgive():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
@@ -479,6 +469,16 @@ def api_blacklist_forgive():
     log_admin('forgive_ip', ip)
     return jsonify({'success': True})
 
+@app.route('/api/clear-rate-limit', methods=['POST'])
+def api_clear_rate_limit():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    ip = request.get_json().get('ip', '')
+    if not ip: return jsonify({'error': 'missing ip'}), 400
+    clear_rate_limit(ip)
+    socketio.emit('guard_action', {'action': 'clear_rate_limit', 'ip': ip})
+    return jsonify({'success': True})
+
+# ── WHITELIST ──
 @app.route('/api/whitelist')
 def api_whitelist():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
@@ -497,6 +497,7 @@ def api_whitelist_remove():
     remove_from_whitelist(request.get_json()['ip'])
     return jsonify({'success': True})
 
+# ── SESSIONS ──
 @app.route('/api/sessions')
 def api_sessions():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
@@ -521,7 +522,6 @@ def api_sessions_kick():
 def api_session_heartbeat():
     username = request.get_json().get('username', '')
     update_session_heartbeat(username)
-    # Check if session was kicked (deleted from DB)
     active = get_sessions()
     still_valid = any(s['username'] == username for s in active)
     if not still_valid:
@@ -530,104 +530,41 @@ def api_session_heartbeat():
         return jsonify({'ok': False, 'kicked': True})
     return jsonify({'ok': True})
 
+# ── AI LOGS ──
 @app.route('/api/ai-logs')
 def api_ai_logs():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_ai_logs(20)])
 
-# ── GUARD TOOLS (Groq Tool Calling) ──
+# ── GUARD TOOLS ──
 GUARD_TOOLS = [
-    {
-        'type': 'function',
-        'function': {
-            'name': 'block_ip',
-            'description': 'Block an IP address and add it to the blacklist',
-            'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string', 'description': 'IP address to block'}}, 'required': ['ip']}
-        }
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'forgive_ip',
-            'description': 'Remove an IP from the blacklist and clear its rate limit history',
-            'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string', 'description': 'IP address to forgive'}}, 'required': ['ip']}
-        }
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'clear_rate_limit',
-            'description': 'Clear failed login attempts for an IP so they can try again',
-            'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string', 'description': 'IP address to clear'}}, 'required': ['ip']}
-        }
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'add_whitelist',
-            'description': 'Add an IP to the whitelist so it can pass Node 3',
-            'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}, 'label': {'type': 'string', 'description': 'Label for this IP'}}, 'required': ['ip']}
-        }
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'remove_whitelist',
-            'description': 'Remove an IP from the whitelist',
-            'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
-        }
-    },
-    {
-        'type': 'function',
-        'function': {
-            'name': 'kick_session',
-            'description': 'Force logout a user and terminate their session',
-            'parameters': {'type': 'object', 'properties': {'username': {'type': 'string', 'description': 'Username to kick'}}, 'required': ['username']}
-        }
-    },
+    {'type': 'function', 'function': {'name': 'block_ip', 'description': 'Block an IP address', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'forgive_ip', 'description': 'Remove IP from blacklist and clear rate limit', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'clear_rate_limit', 'description': 'Clear failed login attempts for an IP', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'add_whitelist', 'description': 'Add IP to whitelist', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}, 'label': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'remove_whitelist', 'description': 'Remove IP from whitelist', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'kick_session', 'description': 'Force logout a user', 'parameters': {'type': 'object', 'properties': {'username': {'type': 'string'}}, 'required': ['username']}}},
 ]
 
 def _run_tool(tool_name: str, args: dict) -> str:
-    """Execute a guard tool and return a result string."""
     try:
         if tool_name == 'block_ip':
-            ip = args['ip']
-            add_to_blacklist(ip, 'temporary', 1800)
-            socketio.emit('guard_action', {'action': 'block_ip', 'ip': ip})
-            return f"Blocked {ip} — added to blacklist for 30 minutes."
+            ip = args['ip']; add_to_blacklist(ip, 'temporary', 1800); socketio.emit('guard_action', {'action': 'block_ip', 'ip': ip}); return f"Blocked {ip} for 30 minutes."
         elif tool_name == 'forgive_ip':
-            ip = args['ip']
-            forgive_ip(ip)
-            clear_rate_limit(ip)
-            socketio.emit('guard_action', {'action': 'forgive_ip', 'ip': ip})
-            return f"Forgiven {ip} — removed from blacklist and rate limit cleared."
+            ip = args['ip']; forgive_ip(ip); clear_rate_limit(ip); socketio.emit('guard_action', {'action': 'forgive_ip', 'ip': ip}); return f"Forgiven {ip} — blacklist and rate limit cleared."
         elif tool_name == 'clear_rate_limit':
-            ip = args['ip']
-            clear_rate_limit(ip)
-            socketio.emit('guard_action', {'action': 'clear_rate_limit', 'ip': ip})
-            return f"Rate limit cleared for {ip} — they can now attempt login again."
+            ip = args['ip']; clear_rate_limit(ip); socketio.emit('guard_action', {'action': 'clear_rate_limit', 'ip': ip}); return f"Rate limit cleared for {ip}."
         elif tool_name == 'add_whitelist':
-            ip = args['ip']
-            label = args.get('label', 'Guard approved')
-            add_to_whitelist(ip, label)
-            socketio.emit('guard_action', {'action': 'add_whitelist', 'ip': ip})
-            return f"Added {ip} to whitelist as '{label}'."
+            ip = args['ip']; label = args.get('label', 'Guard approved'); add_to_whitelist(ip, label); socketio.emit('guard_action', {'action': 'add_whitelist', 'ip': ip}); return f"Added {ip} to whitelist."
         elif tool_name == 'remove_whitelist':
-            ip = args['ip']
-            remove_from_whitelist(ip)
-            socketio.emit('guard_action', {'action': 'remove_whitelist', 'ip': ip})
-            return f"Removed {ip} from whitelist."
+            ip = args['ip']; remove_from_whitelist(ip); socketio.emit('guard_action', {'action': 'remove_whitelist', 'ip': ip}); return f"Removed {ip} from whitelist."
         elif tool_name == 'kick_session':
-            username = args['username']
-            delete_session(username)
-            socketio.emit('session_kicked', {'username': username})
-            return f"Kicked {username} — session terminated."
+            username = args['username']; delete_session(username); socketio.emit('session_kicked', {'username': username}); return f"Kicked {username}."
         else:
             return f"Unknown tool: {tool_name}"
     except Exception as e:
         return f"Tool error: {e}"
 
-# ── GUARD CHAT ──
 def mask_ip(ip: str) -> str:
     parts = ip.split('.')
     return f"x.x.x.{parts[-1]}" if len(parts) == 4 else 'x.x.x.x'
@@ -639,15 +576,15 @@ def log_admin(action: str, target: str):
 
 def _get_system_context() -> str:
     try:
-        logs     = get_logs(10)
-        ai_logs  = get_ai_logs(5)
+        logs    = get_logs(10)
+        ai_logs = get_ai_logs(5)
         sessions = get_sessions()
-        bl       = get_blacklist()
-        wl       = get_whitelist()
-        pending  = get_pending_devices()
+        bl      = get_blacklist()
+        wl      = get_whitelist()
+        pending = get_pending_devices()
         ctx  = "=== LIVE NETAD SYSTEM STATE ===\n"
         ctx += f"Camera access: {'OPEN' if is_consensus_granted() else 'LOCKED'}\n"
-        ctx += f"All 6 nodes: INLINE (always active)\n"
+        ctx += f"All 6 nodes: ONLINE (always active)\n"  # fixed: was INLINE
         ctx += f"Pending device approvals: {len(pending)}\n\n"
         ctx += "Recent logs:\n"
         for l in logs:
@@ -669,114 +606,48 @@ def api_chat():
     if not user_message: return jsonify({'error': 'empty'})
     groq_api_key = os.environ.get('GROQ_API_KEY')
     if not groq_api_key: return jsonify({'reply': 'Groq API key not configured.'})
-
     add_chat_log('user', user_message)
     chat_history = get_chat_logs(20)
-
     system_prompt = (
         "You are NETAD Guard, an AI security officer for the NETAD multi-layer camera security system. "
         "You have real-time access to login logs, AI anomaly alerts, node status, device approvals, blacklist, whitelist, and active sessions. "
         "You speak professionally and concisely. "
-        "When the user asks you to perform a security action, use the provided tools to execute it immediately — do not just describe what you would do. "
-        "After using a tool, confirm what was done in plain language.\n\n"
-        + _get_system_context()
+        "When the user asks you to perform a security action, use the provided tools to execute it immediately. "
+        "After using a tool, confirm what was done.\n\n" + _get_system_context()
     )
-
     messages = [{'role': 'system', 'content': system_prompt}]
     for msg in chat_history[-16:]:
         if msg.get('role') == 'system': continue
         messages.append({'role': msg.get('role', 'user'), 'content': msg.get('message', '')})
     messages.append({'role': 'user', 'content': user_message})
-
     try:
         from groq import Groq
         client = Groq(api_key=groq_api_key)
         executed_actions = []
-
-        # First call — AI may call tools
-        response = client.chat.completions.create(
-            model='llama-3.3-70b-versatile',
-            messages=messages,
-            tools=GUARD_TOOLS,
-            tool_choice='auto',
-            max_tokens=1024,
-            temperature=0.4
-        )
+        response = client.chat.completions.create(model='llama-3.3-70b-versatile', messages=messages, tools=GUARD_TOOLS, tool_choice='auto', max_tokens=1024, temperature=0.4)
         msg_obj = response.choices[0].message
-
-        # Handle tool calls if any
         if msg_obj.tool_calls:
-            messages.append({'role': 'assistant', 'content': msg_obj.content or '', 'tool_calls': [{
-                'id': tc.id, 'type': 'function',
-                'function': {'name': tc.function.name, 'arguments': tc.function.arguments}
-            } for tc in msg_obj.tool_calls]})
-
+            messages.append({'role': 'assistant', 'content': msg_obj.content or '', 'tool_calls': [{'id': tc.id, 'type': 'function', 'function': {'name': tc.function.name, 'arguments': tc.function.arguments}} for tc in msg_obj.tool_calls]})
             for tc in msg_obj.tool_calls:
                 args = json.loads(tc.function.arguments)
                 result = _run_tool(tc.function.name, args)
                 executed_actions.append({'tool': tc.function.name, 'args': args, 'result': result})
                 messages.append({'role': 'tool', 'tool_call_id': tc.id, 'content': result})
-
-            # Second call — AI summarizes what it did
-            followup = client.chat.completions.create(
-                model='llama-3.3-70b-versatile',
-                messages=messages,
-                max_tokens=512,
-                temperature=0.4
-            )
+            followup = client.chat.completions.create(model='llama-3.3-70b-versatile', messages=messages, max_tokens=512, temperature=0.4)
             reply = followup.choices[0].message.content.strip()
         else:
             reply = msg_obj.content.strip() if msg_obj.content else 'No response.'
-
         add_chat_log('assistant', reply)
         socketio.emit('chat_message', {'role': 'assistant', 'message': reply})
         return jsonify({'reply': reply, 'action_result': executed_actions})
-
     except Exception as e:
         return jsonify({'reply': f'Guard unavailable: {e}'})
-
-def _execute_action(reply: str) -> dict:
-    import re
-    match = re.search(r'ACTION:(\{.*?\})', reply, re.DOTALL)
-    if not match: return {}
-    try:
-        import json as _j
-        action = _j.loads(match.group(1))
-        act = action.get('action', '')
-        ip  = action.get('ip', '')
-        username = action.get('username', '')
-        if act == 'block_ip' and ip:
-            add_to_blacklist(ip, 'temporary', 1800)
-            socketio.emit('guard_action', {'action': 'block_ip', 'ip': ip})
-            return {'executed': 'block_ip', 'ip': ip}
-        elif act == 'forgive_ip' and ip:
-            forgive_ip(ip)
-            socketio.emit('guard_action', {'action': 'forgive_ip', 'ip': ip})
-            return {'executed': 'forgive_ip', 'ip': ip}
-        elif act == 'kick_session' and username:
-            delete_session(username)
-            socketio.emit('session_kicked', {'username': username})
-            return {'executed': 'kick_session', 'username': username}
-        elif act == 'add_whitelist' and ip:
-            add_to_whitelist(ip, action.get('label', 'Guard approved'))
-            return {'executed': 'add_whitelist', 'ip': ip}
-        elif act == 'clear_rate_limit' and ip:
-            clear_rate_limit(ip)
-            socketio.emit('guard_action', {'action': 'clear_rate_limit', 'ip': ip})
-            return {'executed': 'clear_rate_limit', 'ip': ip}
-        elif act == 'remove_whitelist' and ip:
-            remove_from_whitelist(ip)
-            return {'executed': 'remove_whitelist', 'ip': ip}
-    except Exception as e:
-        print(f"Action parse error: {e}")
-    return {}
 
 @app.route('/api/chat/history')
 def api_chat_history():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_chat_logs(50)])
 
-# ── DEVICE ROUTES ──
 # ── DEVICE REGISTRATION RATE LIMIT ──
 _device_reg_attempts: dict = {}
 _device_reg_lock = threading.Lock()
@@ -791,6 +662,7 @@ def check_device_reg_rate(ip: str, max_attempts: int = 3, window: int = 3600) ->
         _device_reg_attempts[ip].append(now)
         return True
 
+# ── DEVICE ROUTES ──
 @app.route('/api/register-device', methods=['POST'])
 def api_register_device():
     data       = request.get_json()
@@ -799,65 +671,45 @@ def api_register_device():
     public_key = data.get('public_key', '').strip()
     label      = data.get('label', 'Unknown Device')
     client_ip  = request.remote_addr
-
     if not username or not device_id or not public_key:
         return jsonify({'error': 'registration failed'}), 400
     if not check_device_reg_rate(client_ip):
         return jsonify({'error': 'registration failed'}), 429
     if not get_user(username):
         return jsonify({'error': 'registration failed'}), 400
-
     register_device(username, device_id, public_key, label, registered_ip=client_ip)
-
     if username == 'admin':
         approve_device(device_id)
         add_to_whitelist(client_ip, f'admin ({label[:30]})')
         return jsonify({'status': 'approved'})
-
     pending = len(get_pending_devices())
     socketio.emit('device_pending', {'username': username, 'device_id': device_id, 'label': label, 'pending_count': pending})
     return jsonify({'status': 'pending'})
 
 @app.route('/api/update-ip', methods=['POST'])
 def api_update_ip():
-    """
-    Lets a user update their whitelisted IP when it changes.
-    Requires valid ECDSA device signature — only the real device owner can do this.
-    No active session required (they may be locked out due to IP change).
-    """
     data             = request.get_json()
     username         = data.get('username', '').strip()
     device_id        = data.get('device_id', '').strip()
     device_signature = data.get('device_signature', '')
     device_message   = data.get('device_message', '')
     client_ip        = request.remote_addr
-
     if not all([username, device_id, device_signature, device_message]):
         return jsonify({'error': 'request failed'}), 400
     if not check_device_reg_rate(client_ip, max_attempts=5, window=3600):
         return jsonify({'error': 'request failed'}), 429
-
-    # Verify device signature before allowing IP update
-    verify_payload = {
-        'username': username, 'device_id': device_id,
-        'device_signature': device_signature, 'device_message': device_message
-    }
+    verify_payload = {'username': username, 'device_id': device_id, 'device_signature': device_signature, 'device_message': device_message}
     if node4_device_signature(verify_payload) != 'PASS':
         add_log(username, client_ip, 'DENIED', 'IP update — invalid device signature')
         return jsonify({'error': 'invalid device signature'}), 403
-
-    # Valid signature — update their IP in whitelist
     device = get_device(device_id)
     label = device['label'] if device else 'Updated device'
     add_to_whitelist(client_ip, f'{username} ({label[:30]})')
     add_log(username, client_ip, 'GRANTED', 'IP updated via device signature')
-    print(f"IP updated: '{username}' → {client_ip} whitelisted")
     return jsonify({'success': True, 'new_ip': client_ip})
 
 @app.route('/api/device-status')
 def api_device_status():
-    # Only the device itself needs to check status (pre-login)
-    # Return minimal info — don't expose username or label
     device_id = request.args.get('device_id', '')
     if not device_id: return jsonify({'status': 'unknown'})
     device = get_device(device_id)
@@ -885,7 +737,6 @@ def api_device_approve():
     device = get_device(device_id)
     if device and device.get('registered_ip'):
         add_to_whitelist(device['registered_ip'], f"{device['username']} ({device['label'][:30]})")
-        print(f"Auto-whitelisted {device['registered_ip']} for '{device['username']}' on approval")
     socketio.emit('device_approved', {'device_id': device_id})
     log_admin('approve_device', device_id)
     return jsonify({'success': True})
