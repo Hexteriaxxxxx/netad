@@ -351,11 +351,16 @@ def login():
         from ai.anomaly import is_suspicious
         suspicious, score = is_suspicious(client_ip, username)
         if suspicious:
-            add_log(username, client_ip, 'SUSPICIOUS', f'AI flagged (score={score:.3f})')
             add_ai_log(client_ip, username, 'Suspicious login pattern detected', score, True)
             socketio.emit('ai_alert', {'ip': client_ip, 'username': username, 'score': float(score), 'message': f'Anomalous login from {client_ip}'})
-            _notify_guard(f"🚨 AI flagged suspicious login from {client_ip} (user: '{username}', score: {score:.3f})")
-            return jsonify({'granted': False, 'error': 'suspicious behavior detected', 'steps': [{'layer': 'AI Anomaly', 'result': 'FAIL'}]})
+            _notify_guard(f"🚨 AI flagged suspicious login from {mask_ip(client_ip)} (user: '{username}', score: {score:.3f})")
+            # Only hard-block if IP is NOT whitelisted
+            # Whitelisted IPs are trusted — warn only, let nodes decide
+            if not is_whitelisted(client_ip):
+                add_log(username, client_ip, 'SUSPICIOUS', f'AI flagged (score={score:.3f})')
+                return jsonify({'granted': False, 'error': 'suspicious behavior detected', 'steps': [{'layer': 'AI Anomaly', 'result': 'FAIL'}]})
+            else:
+                add_log(username, client_ip, 'AI_WARN', f'AI flagged but whitelisted — continuing (score={score:.3f})')
     except Exception as e:
         print(f"AI check error: {e}")
     block = Block({'username': username, 'password': password, 'ip': client_ip})
