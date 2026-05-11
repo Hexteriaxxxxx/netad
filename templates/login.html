@@ -155,7 +155,6 @@ body.leaving{animation:pageOut 0.4s ease forwards;}
         <button class="login-btn" style="margin-top:1rem;background:transparent;border:1px solid var(--border2);color:var(--text2);" onclick="initDevice()">
           <span class="btn-text">CHECK STATUS ↺</span>
         </button>
-        <!-- Update IP button — shown when IP may have changed -->
         <button class="login-btn" id="update-ip-btn" style="margin-top:0.5rem;background:rgba(255,179,68,0.1);border:1px solid rgba(255,179,68,0.3);color:var(--amber);display:none;" onclick="updateMyIP()">
           <span class="btn-text">📍 UPDATE MY IP →</span>
         </button>
@@ -183,7 +182,10 @@ body.leaving{animation:pageOut 0.4s ease forwards;}
             <svg id="pw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
           </span>
         </div>
-        <div class="caps-hint" id="caps-hint"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 12h5v8h10v-8h5L12 2z"/></svg>CAPS LOCK IS ON</div>
+        <div class="caps-hint" id="caps-hint">
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 12h5v8h10v-8h5L12 2z"/></svg>
+          CAPS LOCK IS ON
+        </div>
       </div>
       <button class="login-btn" id="login-btn" onclick="doLogin()">
         <div class="spinner"></div><span class="btn-text">AUTHENTICATE →</span>
@@ -199,10 +201,7 @@ body.leaving{animation:pageOut 0.4s ease forwards;}
 // ══════════════════════════════════════════
 // WEB CRYPTO + INDEXEDDB DEVICE AUTH
 // ══════════════════════════════════════════
-let _deviceKeyPair = null;
-let _deviceId = localStorage.getItem('netad_device_id');
-let _deviceUsername = null;
-
+let _deviceKeyPair=null,_deviceId=localStorage.getItem('netad_device_id'),_deviceUsername=null;
 function openIDB(){return new Promise((res,rej)=>{const r=indexedDB.open('NETAD_Keys',1);r.onupgradeneeded=e=>e.target.result.createObjectStore('keys');r.onsuccess=e=>res(e.target.result);r.onerror=()=>rej(r.error);});}
 async function idbGet(key){const db=await openIDB();return new Promise((res,rej)=>{const r=db.transaction('keys','readonly').objectStore('keys').get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});}
 async function idbSet(key,value){const db=await openIDB();return new Promise((res,rej)=>{const r=db.transaction('keys','readwrite').objectStore('keys').put(value,key);r.onsuccess=()=>res();r.onerror=()=>rej(r.error);});}
@@ -215,26 +214,15 @@ async function initDevice(){
     const res=await fetch('/api/device-status?device_id='+_deviceId);
     const data=await res.json();
     _deviceUsername=data.username||null;
-    if(data.status==='approved'){
-      showSection('login');
-    } else if(data.status==='pending'){
-      showStatusMsg('pending',data.username);
-      document.getElementById('update-ip-btn').style.display='flex';
-    } else if(data.status==='rejected'){
-      showStatusMsg('rejected',data.username);
-    } else {
-      showSection('register');
-    }
-  }catch(e){
-    // Server unreachable — show login
-    showSection('login');
-  }
+    if(data.status==='approved'){showSection('login');}
+    else if(data.status==='pending'){showStatusMsg('pending',data.username);document.getElementById('update-ip-btn').style.display='flex';}
+    else if(data.status==='rejected'){showStatusMsg('rejected',data.username);}
+    else{showSection('register');}
+  }catch(e){showSection('login');}
 }
 
 function showSection(name){
-  ['device-register-section','device-status-section','login-section'].forEach(id=>{
-    document.getElementById(id).style.display='none';
-  });
+  ['device-register-section','device-status-section','login-section'].forEach(id=>{document.getElementById(id).style.display='none';});
   const map={register:'device-register-section',status:'device-status-section',login:'login-section'};
   document.getElementById(map[name]).style.display='block';
 }
@@ -245,7 +233,7 @@ function showStatusMsg(status,username){
   if(status==='pending'){
     msg.innerHTML=`<span style="color:var(--amber)">⏳ PENDING APPROVAL</span><br><span style="font-size:10px;color:var(--text2)">Registered as <b>${username||''}</b>.<br>Ask your admin to approve this device.</span>`;
     document.getElementById('update-ip-btn').style.display='flex';
-  } else {
+  }else{
     msg.innerHTML=`<span style="color:var(--red)">❌ DEVICE REJECTED</span><br><span style="font-size:10px;color:var(--text2)">This device was rejected by admin.</span>`;
     document.getElementById('update-ip-btn').style.display='none';
   }
@@ -282,12 +270,8 @@ async function updateMyIP(){
     if(!username){setUpdateStatus('// username unknown — re-register','var(--red)');return;}
     const res=await fetch('/api/update-ip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,device_id:_deviceId,device_signature:sigB64,device_message:message})});
     const data=await res.json();
-    if(data.success){
-      setUpdateStatus(`✓ IP updated to ${data.new_ip}. Try logging in now.`,'var(--accent)');
-      setTimeout(()=>initDevice(),1500);
-    } else {
-      setUpdateStatus('// '+( data.error||'update failed'),'var(--red)');
-    }
+    if(data.success){setUpdateStatus(`✓ IP updated to ${data.new_ip}. Try logging in now.`,'var(--accent)');setTimeout(()=>initDevice(),1500);}
+    else{setUpdateStatus('// '+(data.error||'update failed'),'var(--red)');}
   }catch(e){setUpdateStatus('// error: '+e.message,'var(--red)');}
 }
 
@@ -305,14 +289,31 @@ async function signLoginRequest(username,sessionToken){
   }catch(e){return null;}
 }
 
-// ── PASSWORD TOGGLE ──
+// ── PASSWORD TOGGLE + CAPS LOCK FIX ──
 document.addEventListener('DOMContentLoaded',()=>{
   const pwInput=document.getElementById('p');
   if(!pwInput)return;
   const pwToggle=document.getElementById('pw-toggle'),pwIcon=document.getElementById('pw-icon');
+  const capsHint=document.getElementById('caps-hint');
   let pwVisible=false;
-  pwToggle.addEventListener('click',()=>{pwVisible=!pwVisible;pwInput.type=pwVisible?'text':'password';pwIcon.innerHTML=pwVisible?'<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>':'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';});
-  pwInput.addEventListener('keyup',e=>{document.getElementById('caps-hint').classList.toggle('show',e.getModifierState&&e.getModifierState('CapsLock'));});
+
+  pwToggle.addEventListener('click',()=>{
+    pwVisible=!pwVisible;
+    pwInput.type=pwVisible?'text':'password';
+    pwIcon.innerHTML=pwVisible
+      ?'<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>'
+      :'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+  });
+
+  // CAPS LOCK: only check on actual character key presses, not modifier-only keys
+  pwInput.addEventListener('keydown', e => {
+    if(e.key.length > 1) return; // ignore Shift, CapsLock, Enter, Backspace, etc.
+    const capsOn = e.getModifierState && e.getModifierState('CapsLock');
+    capsHint.classList.toggle('show', capsOn);
+  });
+
+  // Hide warning when field loses focus
+  pwInput.addEventListener('blur', () => capsHint.classList.remove('show'));
 });
 
 // ── GLOBE ──
@@ -434,9 +435,7 @@ async function doLogin(){
   prog.classList.add('visible');
   bar.style.transition='width 2s cubic-bezier(0.4,0,0.2,1)';bar.style.width='80%';
   setStatus('// running 6-layer consensus...','var(--text2)');
-
-  // Save username for IP update later
-  localStorage.setItem('netad_username', u);
+  localStorage.setItem('netad_username',u);
 
   try{
     const deviceSig=await signLoginRequest(u,session_token)||{};
@@ -451,7 +450,7 @@ async function doLogin(){
     if(data.granted){
       setStatus('// access granted — welcome, '+data.user,'var(--accent)');
       setTimeout(()=>{prog.style.opacity='0';document.body.classList.add('leaving');setTimeout(()=>{window.location.href='/dashboard';},400);},1000);
-    } else {
+    }else{
       bar.style.background='var(--red)';
       setStatus('// '+(data.error||'authentication failed'),'var(--red)');
       document.getElementById('p').classList.add('error');shakeCard();
