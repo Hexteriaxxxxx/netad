@@ -497,25 +497,22 @@ def api_ai_logs():
 # GUARD AI — tools + chat
 # ══════════════════════════════════════════════════
 
-# IMPORTANT: kick_session is intentionally NOT included in GUARD_TOOLS.
-# The AI must never autonomously kick sessions — it would auto-kick everyone
-# when asked "who's online". Kicking must only happen via the dashboard button.
-# The guard can TELL the admin who to kick, but cannot execute it itself.
+# NOTE: kick_session is included but heavily restricted via system prompt.
 GUARD_TOOLS = [
     {'type': 'function', 'function': {
         'name': 'block_ip',
         'description': 'Block an IP address and add it to the blacklist for 30 minutes.',
-        'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string', 'description': 'IP address to block'}}, 'required': ['ip']}
+        'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
     }},
     {'type': 'function', 'function': {
         'name': 'forgive_ip',
         'description': 'Remove an IP from the blacklist and clear its failed login history.',
-        'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string', 'description': 'IP to forgive'}}, 'required': ['ip']}
+        'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
     }},
     {'type': 'function', 'function': {
         'name': 'clear_rate_limit',
         'description': 'Clear failed login attempts for an IP so they can try again.',
-        'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string', 'description': 'IP to clear'}}, 'required': ['ip']}
+        'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
     }},
     {'type': 'function', 'function': {
         'name': 'add_whitelist',
@@ -527,8 +524,12 @@ GUARD_TOOLS = [
         'description': 'Remove an IP from the whitelist.',
         'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
     }},
+    {'type': 'function', 'function': {
+        'name': 'kick_session',
+        'description': 'Force logout a specific user by their exact username. ONLY call this when the user explicitly says to kick a specific named person.',
+        'parameters': {'type': 'object', 'properties': {'username': {'type': 'string', 'description': 'The exact username to kick'}}, 'required': ['username']}
+    }},
 ]
-# NOTE: kick_session is excluded from tools on purpose — see comment above.
 
 def _run_tool(tool_name: str, args: dict) -> str:
     try:
@@ -542,6 +543,8 @@ def _run_tool(tool_name: str, args: dict) -> str:
             ip = args['ip']; label = args.get('label', 'Guard approved'); add_to_whitelist(ip, label); socketio.emit('guard_action', {'action': 'add_whitelist', 'ip': ip}); return f"Added {ip} to whitelist."
         elif tool_name == 'remove_whitelist':
             ip = args['ip']; remove_from_whitelist(ip); socketio.emit('guard_action', {'action': 'remove_whitelist', 'ip': ip}); return f"Removed {ip} from whitelist."
+        elif tool_name == 'kick_session':
+            username = args['username']; delete_session(username); socketio.emit('session_kicked', {'username': username}); log_admin('kick_session', username); return f"Kicked {username} — session terminated."
         else:
             return f"Unknown tool: {tool_name}"
     except Exception as e:
@@ -597,18 +600,15 @@ def api_chat():
     chat_history = get_chat_logs(20)
 
     system_prompt = (
-        "You are NETAD Guard, an AI security officer for the NETAD multi-layer camera security system.\n"
-        "You have real-time access to login logs, AI anomaly alerts, node status, device approvals, blacklist, whitelist, and active sessions.\n"
+        "You are NETAD Guard, an AI security officer for the NETAD security system.\n"
+        "You have real-time access to logs, sessions, devices, blacklist, and whitelist.\n"
         "You speak professionally and concisely.\n\n"
-        "IMPORTANT RULES FOR TOOL USE:\n"
-        "- ONLY call tools when the user EXPLICITLY asks you to perform an action.\n"
-        "- For informational questions like 'who is online', 'show logs', 'what happened', 'show sessions' — NEVER call any tool. Just report the information from the system state.\n"
-        "- ONLY call block_ip if the user says 'block', 'blacklist', or 'ban' a specific IP.\n"
-        "- ONLY call forgive_ip if the user says 'forgive', 'unblock', or 'remove from blacklist'.\n"
-        "- ONLY call add_whitelist/remove_whitelist if explicitly asked.\n"
-        "- ONLY call clear_rate_limit if explicitly asked to clear rate limit.\n"
-        "- You CANNOT kick sessions — that must be done manually via the dashboard. If asked to kick, tell the admin to use the dashboard Sessions tab.\n"
-        "- When in doubt, report information only. Do NOT take action.\n\n"
+        "STRICT RULES:\n"
+        "- For ANY informational question (who is online, show logs, show sessions, etc.) — just answer, NEVER call a tool.\n"
+        "- Only call kick_session when the user EXPLICITLY says to kick a SPECIFIC person by name. Example: 'kick kevin', 'remove nico'. NEVER call kick_session just because you see a list of users.\n"
+        "- Only call block_ip when user explicitly says 'block [ip]'.\n"
+        "- Only call other tools when explicitly requested.\n"
+        "- When in doubt — describe, do not act.\n\n"
         + _get_system_context()
     )
 
