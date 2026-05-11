@@ -131,7 +131,9 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
 .msg-label{font-size:9px;font-family:var(--mono);letter-spacing:1px;font-weight:700;}
 .chat-msg.user .msg-label{color:var(--accent);}
 .chat-msg.assistant .msg-label{color:var(--blue);}
-.chat-msg.system-alert .msg-label{color:var(--red);}
+.chat-msg.other-user{align-self:flex-end;align-items:flex-end;}
+.chat-msg.other-user .msg-bubble{background:rgba(0,180,216,0.1);border:1px solid rgba(0,180,216,0.25);color:var(--text);border-bottom-right-radius:3px;}
+.chat-msg.other-user .msg-label{color:var(--blue);}
 .chat-input-row{display:flex;gap:8px;padding-top:12px;border-top:1px solid var(--border);}
 .chat-input{flex:1;padding:11px 14px;background:var(--bg3);border:1px solid var(--border2);border-radius:10px;color:var(--text);font-family:var(--mono);font-size:12px;outline:none;transition:border-color 0.2s;}
 .chat-input:focus{border-color:var(--accent);}
@@ -258,6 +260,7 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
     <div class="tab" data-tab="whitelist" onclick="switchTab('whitelist',this)">WHITELIST</div>
     <div class="tab" data-tab="ai" onclick="switchTab('ai',this)">AI LOG</div>
     <div class="tab" data-tab="sessions" onclick="switchTab('sessions',this)">SESSIONS</div>
+    <div class="tab" data-tab="users" onclick="switchTab('users',this)">👤 USERS</div>
     <div class="tab" data-tab="chat" onclick="switchTab('chat',this)">🤖 GUARD AI</div>
   </div>
 
@@ -371,6 +374,27 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
     </div>
   </div>
 
+  <!-- USERS -->
+  <div id="tab-users" class="tab-section">
+    <div class="panel">
+      <div class="list-header">
+        <div class="panel-title" style="margin:0;">User Manager <span class="panel-badge" id="usr-count-badge">—</span></div>
+      </div>
+      <div style="margin-bottom:1.5rem;padding:1rem;background:var(--bg3);border:1px solid var(--border);border-radius:10px;">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--text2);letter-spacing:1.5px;margin-bottom:12px;">ADD NEW USER</div>
+        <div class="input-row">
+          <input class="mini-input" id="usr-username" placeholder="username" style="width:140px;"/>
+          <input class="mini-input" id="usr-password" type="password" placeholder="password" style="width:160px;"/>
+          <input class="mini-input" id="usr-role" placeholder="role (e.g. Security Officer)" style="width:200px;"/>
+          <button class="mini-btn btn-green" onclick="doAddUser()">+ ADD USER</button>
+        </div>
+        <div style="font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:8px;">After adding, user must register their device and get approved before they can login.</div>
+      </div>
+      <div class="tbl-header" style="grid-template-columns:1fr 1fr 80px;"><span>USERNAME</span><span>ROLE</span><span>ACTION</span></div>
+      <div id="usr-rows"><div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">Loading...</div></div>
+    </div>
+  </div>
+
   <!-- GUARD AI CHAT -->
   <div id="tab-chat" class="tab-section">
     <div class="panel" style="height:calc(100vh - 260px);display:flex;flex-direction:column;">
@@ -425,7 +449,11 @@ socket.on('session_kicked',d=>{
   }
 });
 socket.on('guard_action',d=>{showToast(`Guard: ${d.action} on ${d.ip||d.username}`,'info');loadBlacklist();loadWhitelist();});
-socket.on('chat_message',d=>{if(d.role==='system'||d.role==='assistant')appendChatMsg(d.role==='system'?'system-alert':'assistant',d.message);});
+socket.on('chat_message',d=>{
+  if(d.role==='assistant') appendChatMsg('assistant',d.message);
+  else if(d.role==='user'&&d.sender&&d.sender!=='{{ user }}') appendChatMsg('other-user',d.message,null,d.sender);
+  else if(d.role==='system') appendChatMsg('system-alert',d.message);
+});
 socket.on('camera_access',d=>{setCameraState(d.accessible);});
 socket.on('device_pending',d=>{
   loadDevices();loadMetrics();
@@ -474,6 +502,7 @@ function switchTab(name,el){
   if(name==='ai')loadAiLogs();
   if(name==='sessions')loadSessions();
   if(name==='chat')loadChatHistory();
+  if(name==='users')loadUsers();
 }
 
 // ── CAMERA ──
@@ -730,14 +759,43 @@ function doKick(username){
   });
 }
 
+// ── USERS ──
+async function loadUsers(){
+  try{
+    const data=await fetch('/api/users').then(r=>r.json());
+    const c=document.getElementById('usr-rows');c.innerHTML='';
+    document.getElementById('usr-count-badge').textContent=`${data.length} USERS`;
+    if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No users found</div>';return;}
+    data.forEach(u=>{
+      const div=document.createElement('div');div.className='tbl-row';div.style.gridTemplateColumns='1fr 1fr 80px';
+      div.innerHTML=`<span style="color:var(--text);font-weight:500;">${u.username}</span><span style="color:var(--text2);">${u.role||'—'}</span><span style="color:var(--text3);font-size:9px;">active</span>`;
+      c.appendChild(div);
+    });
+  }catch(e){}
+}
+async function doAddUser(){
+  const username=document.getElementById('usr-username').value.trim();
+  const password=document.getElementById('usr-password').value;
+  const role=document.getElementById('usr-role').value.trim()||'Security Officer';
+  if(!username||!password){showToast('Username and password required','error');return;}
+  const res=await fetch('/api/users/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password,role})});
+  const data=await res.json();
+  if(data.error){showToast(data.error,'error');return;}
+  document.getElementById('usr-username').value='';
+  document.getElementById('usr-password').value='';
+  document.getElementById('usr-role').value='';
+  loadUsers();
+  showToast(`User '${username}' added! They must register their device to login.`,'success',5000);
+}
+
 // ── GUARD AI CHAT ──
 function setChatInput(text){document.getElementById('chat-input').value=text;document.getElementById('chat-input').focus();}
 function nowTime(){return new Date().toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',hour12:true});}
-function appendChatMsg(role,text,time){
+function appendChatMsg(role,text,time,customSender){
   const c=document.getElementById('chat-messages');
   const wrapper=document.createElement('div');
-  wrapper.className=`chat-msg ${role==='user'?'user':role==='system-alert'?'system-alert':'assistant'}`;
-  const labels={'user':'{{ user | upper }}','assistant':'NETAD GUARD','system-alert':'⚠ SYSTEM ALERT'};
+  wrapper.className=`chat-msg ${role==='user'?'user':role==='system-alert'?'system-alert':role==='other-user'?'other-user':'assistant'}`;
+  const labels={'user':'{{ user | upper }}','assistant':'NETAD GUARD','system-alert':'⚠ SYSTEM ALERT','other-user':(customSender||'').toUpperCase()};
   wrapper.innerHTML=`<span class="msg-label">${labels[role]||'GUARD'}</span><div class="msg-bubble">${(text||'').replace(/ACTION:\{.*?\}/gs,'').trim()}</div><span class="msg-time">${time||nowTime()}</span>`;
   c.appendChild(wrapper);
   c.scrollTop=c.scrollHeight;

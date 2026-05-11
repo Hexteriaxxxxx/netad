@@ -602,6 +602,12 @@ def api_chat():
     if not groq_api_key: return jsonify({'reply': 'Groq API key not configured.'})
 
     add_chat_log('user', user_message)
+    # Broadcast user message to all connected clients (GC effect)
+    socketio.emit('chat_message', {
+        'role': 'user',
+        'message': user_message,
+        'sender': session.get('user', 'unknown')
+    })
     chat_history = get_chat_logs(20)
 
     system_prompt = (
@@ -764,6 +770,41 @@ def api_device_delete():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     delete_device(request.get_json()['device_id'])
     return jsonify({'success': True})
+
+@app.route('/api/users/add', methods=['POST'])
+def api_add_user():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    data = request.get_json()
+    username = data.get('username', '').strip()[:50]
+    password = data.get('password', '')[:128]
+    role     = data.get('role', 'Security Officer')[:50]
+    if not username or not password:
+        return jsonify({'error': 'username and password required'}), 400
+    import bcrypt
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
+    try:
+        from database import get_db, get_cursor
+        with get_db() as conn:
+            cur = get_cursor(conn)
+            cur.execute(
+                "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s) ON CONFLICT (username) DO NOTHING",
+                (username, hashed, role)
+            )
+            if cur.rowcount == 0:
+                return jsonify({'error': 'username already exists'}), 409
+        log_admin('add_user', username)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/users', methods=['GET'])
+def api_get_users():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    from database import get_db, get_cursor
+    with get_db() as conn:
+        cur = get_cursor(conn)
+        cur.execute("SELECT username, role FROM users ORDER BY username")
+        return jsonify([dict(r) for r in cur.fetchall()])
 
 # ── MAIN ──
 if __name__ == '__main__':
