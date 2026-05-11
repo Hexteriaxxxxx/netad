@@ -32,7 +32,7 @@ if not app.secret_key:
     raise RuntimeError("SECRET_KEY is not set in .env — refusing to start.")
 
 app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SECURE_COOKIES', 'false').lower() == 'true'
 app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'
 
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
