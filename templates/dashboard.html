@@ -737,7 +737,7 @@ function appendChatMsg(role,text,time){
   const c=document.getElementById('chat-messages');
   const wrapper=document.createElement('div');
   wrapper.className=`chat-msg ${role==='user'?'user':role==='system-alert'?'system-alert':'assistant'}`;
-  const labels={'user':'YOU','assistant':'NETAD GUARD','system-alert':'⚠ SYSTEM ALERT'};
+  const labels={'user':'{{ user | upper }}','assistant':'NETAD GUARD','system-alert':'⚠ SYSTEM ALERT'};
   wrapper.innerHTML=`<span class="msg-label">${labels[role]||'GUARD'}</span><div class="msg-bubble">${(text||'').replace(/ACTION:\{.*?\}/gs,'').trim()}</div><span class="msg-time">${time||nowTime()}</span>`;
   c.appendChild(wrapper);
   c.scrollTop=c.scrollHeight;
