@@ -759,13 +759,15 @@ async function sendChat(){
     const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg})});
     const data=await res.json();
     removeTyping();
-    if(data.error)appendChatMsg('assistant','Error: '+data.error);
-    if(data.action_result&&data.action_result.length){
+    // Show reply directly if SocketIO hasn't delivered it yet (fallback)
+    if(data.reply && data.reply.startsWith('Guard unavailable')) appendChatMsg('assistant', data.reply);
+    if(data.error) appendChatMsg('assistant','Error: '+data.error);
+    if(data.action_result && data.action_result.length){
       loadBlacklist();loadWhitelist();loadSessions();loadMetrics();loadDevices();
     }
   }catch(e){
     removeTyping();
-    appendChatMsg('assistant','Connection error. Make sure Flask is running and GROQ_API_KEY is set.');
+    appendChatMsg('assistant','Connection error.');
   }
   btn.disabled=false;
 }

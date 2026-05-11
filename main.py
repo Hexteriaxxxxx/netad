@@ -647,7 +647,7 @@ def api_chat():
             followup = client.chat.completions.create(model='llama-3.3-70b-versatile', messages=messages, max_tokens=512, temperature=0.3)
             reply = followup.choices[0].message.content.strip()
         else:
-            reply = msg_obj.content.strip() if msg_obj.content else 'No response.'
+            reply = (msg_obj.content or '').strip() or 'No response from guard.'
 
         add_chat_log('assistant', reply)
         socketio.emit('chat_message', {'role': 'assistant', 'message': reply})
