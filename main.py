@@ -32,12 +32,39 @@ if not app.secret_key:
     raise RuntimeError("SECRET_KEY is not set in .env — refusing to start.")
 
 app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'
 
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
-ALLOWED_ORIGIN = os.environ.get('ALLOWED_ORIGIN', '*')
+ALLOWED_ORIGIN = os.environ.get('ALLOWED_ORIGIN', 'http://localhost:5000')
+if ALLOWED_ORIGIN == '*':
+    raise RuntimeError("ALLOWED_ORIGIN=* is not allowed. Set a specific origin in Railway env vars.")
 socketio = SocketIO(app, cors_allowed_origins=ALLOWED_ORIGIN)
+
+# ── SECURITY HEADERS ──
+@app.after_request
+def security_headers(response):
+    response.headers['X-Frame-Options']        = 'DENY'
+    response.headers['X-Content-Type-Options']  = 'nosniff'
+    response.headers['X-XSS-Protection']        = '1; mode=block'
+    response.headers['Referrer-Policy']         = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy']      = 'camera=(), microphone=(), geolocation=()'
+    return response
+
+# ── GLOBAL ERROR HANDLER ──
+@app.errorhandler(Exception)
+def handle_error(e):
+    import traceback
+    print(f"Unhandled error: {traceback.format_exc()}")
+    return jsonify({'error': 'An internal error occurred.'}), 500
+
+# ── SOCKETIO AUTH ──
+@socketio.on('connect')
+def on_socketio_connect():
+    if 'user' not in session:
+        print(f"SocketIO: rejected unauthenticated connection from {request.remote_addr}")
+        return False  # Reject unauthenticated connections
 
 # ── CAMERA CONFIG ──
 CAMERA_URLS = {
@@ -372,7 +399,21 @@ def login():
 
 @app.route('/api/node-status')
 def node_status():
-    return jsonify({'password': True, 'timestamp': True, 'ip_whitelist': True, 'digital_sig': True, 'session_token': True, 'rate_limit': True})
+    try:
+        from database import get_db
+        with get_db() as conn:
+            conn.cursor().execute('SELECT 1')
+        db_ok = True
+    except Exception:
+        db_ok = False
+    return jsonify({
+        'password':     db_ok,
+        'timestamp':    True,
+        'ip_whitelist': db_ok,
+        'digital_sig':  True,
+        'session_token':db_ok,
+        'rate_limit':   db_ok
+    })
 
 @app.route('/api/logs')
 def api_logs():
@@ -410,7 +451,8 @@ def api_blacklist_forgive():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     ip = request.get_json()['ip']
     forgive_ip(ip)
-    clear_rate_limit(ip)  # also wipe failed attempt logs so they can retry
+    clear_rate_limit(ip)
+    log_admin('forgive_ip', ip)
     return jsonify({'success': True})
 
 @app.route('/api/whitelist')
@@ -448,6 +490,7 @@ def api_sessions_kick():
     data = request.get_json()
     delete_session(data['username'])
     socketio.emit('session_kicked', {'username': data['username']})
+    log_admin('kick_session', data['username'])
     return jsonify({'success': True})
 
 @app.route('/api/session/heartbeat', methods=['POST'])
@@ -561,6 +604,15 @@ def _run_tool(tool_name: str, args: dict) -> str:
         return f"Tool error: {e}"
 
 # ── GUARD CHAT ──
+def mask_ip(ip: str) -> str:
+    parts = ip.split('.')
+    return f"x.x.x.{parts[-1]}" if len(parts) == 4 else 'x.x.x.x'
+
+def log_admin(action: str, target: str):
+    admin = session.get('user', 'system')
+    ip = request.remote_addr if request else 'internal'
+    add_log(admin, ip, 'ADMIN', f'{action}: {target}')
+
 def _get_system_context() -> str:
     try:
         logs     = get_logs(10)
@@ -575,10 +627,10 @@ def _get_system_context() -> str:
         ctx += f"Pending device approvals: {len(pending)}\n\n"
         ctx += "Recent logs:\n"
         for l in logs:
-            ctx += f"  [{l.get('timestamp','')}] {l.get('result','')} — user={l.get('username','')} ip={l.get('ip','')} reason={l.get('reason','')}\n"
+            ctx += f"  [{l.get('timestamp','')}] {l.get('result','')} — user={l.get('username','')} ip={mask_ip(str(l.get('ip','')))} reason={l.get('reason','')}\n"
         ctx += "\nAI flags:\n"
         for a in ai_logs:
-            ctx += f"  ip={a.get('ip','')} user={a.get('username','')} score={a.get('score','')} flagged={a.get('flagged','')}\n"
+            ctx += f"  ip={mask_ip(str(a.get('ip','')))} user={a.get('username','')} score={a.get('score','')} flagged={a.get('flagged','')}\n"
         ctx += f"\nActive sessions: {len([s for s in sessions if s.get('online')])}\n"
         ctx += f"Blacklisted: {len(bl)} IPs\nWhitelisted: {len(wl)} IPs\n"
         return ctx
@@ -701,6 +753,20 @@ def api_chat_history():
     return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_chat_logs(50)])
 
 # ── DEVICE ROUTES ──
+# ── DEVICE REGISTRATION RATE LIMIT ──
+_device_reg_attempts: dict = {}
+_device_reg_lock = threading.Lock()
+
+def check_device_reg_rate(ip: str, max_attempts: int = 3, window: int = 3600) -> bool:
+    now = time.time()
+    with _device_reg_lock:
+        _device_reg_attempts.setdefault(ip, [])
+        _device_reg_attempts[ip] = [t for t in _device_reg_attempts[ip] if now - t < window]
+        if len(_device_reg_attempts[ip]) >= max_attempts:
+            return False
+        _device_reg_attempts[ip].append(now)
+        return True
+
 @app.route('/api/register-device', methods=['POST'])
 def api_register_device():
     data       = request.get_json()
@@ -712,6 +778,8 @@ def api_register_device():
 
     if not username or not device_id or not public_key:
         return jsonify({'error': 'missing fields'}), 400
+    if not check_device_reg_rate(client_ip):
+        return jsonify({'error': 'too many registration attempts, try again later'}), 429
     if not get_user(username):
         return jsonify({'error': 'user not found'}), 404
 
@@ -745,6 +813,8 @@ def api_update_ip():
 
     if not all([username, device_id, device_signature, device_message]):
         return jsonify({'error': 'missing fields'}), 400
+    if not check_device_reg_rate(client_ip, max_attempts=5, window=3600):
+        return jsonify({'error': 'too many IP update attempts'}), 429
 
     # Verify device signature before allowing IP update
     verify_payload = {
@@ -789,6 +859,7 @@ def api_device_approve():
     data = request.get_json()
     approve_device(data['device_id'])
     socketio.emit('device_approved', {'device_id': data['device_id']})
+    log_admin('approve_device', data['device_id'])
     return jsonify({'success': True})
 
 @app.route('/api/devices/reject', methods=['POST'])
