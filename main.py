@@ -62,9 +62,14 @@ def handle_error(e):
 # ── SOCKETIO AUTH ──
 @socketio.on('connect')
 def on_socketio_connect():
+    # Allow connect for login page (needed for login status updates)
+    # Sensitive events are protected individually
+    pass
+
+@socketio.on('subscribe_dashboard')
+def on_subscribe_dashboard():
     if 'user' not in session:
-        print(f"SocketIO: rejected unauthenticated connection from {request.remote_addr}")
-        return False  # Reject unauthenticated connections
+        return False
 
 # ── CAMERA CONFIG ──
 CAMERA_URLS = {
@@ -289,7 +294,7 @@ def token_cleanup_worker():
             cleanup_used_tokens()
         except Exception as e:
             print(f"Token cleanup error: {e}")
-        time.sleep(600)
+        time.sleep(120)
 
 def _notify_guard(message: str):
     try:
@@ -321,12 +326,30 @@ def logout():
     set_consensus_state(False)
     return redirect(url_for('index'))
 
+# ── PUBLIC ENDPOINT RATE LIMITER ──
+_public_rate: dict = {}
+_public_rate_lock = threading.Lock()
+
+def public_rate_ok(ip: str, max_per_min: int = 15) -> bool:
+    now = time.time()
+    with _public_rate_lock:
+        _public_rate.setdefault(ip, [])
+        _public_rate[ip] = [t for t in _public_rate[ip] if now - t < 60]
+        if len(_public_rate[ip]) >= max_per_min:
+            return False
+        _public_rate[ip].append(now)
+        return True
+
 @app.route('/api/csrf')
 def get_csrf():
+    if not public_rate_ok(request.remote_addr):
+        return jsonify({'error': 'rate limited'}), 429
     return jsonify({'csrf_token': generate_csrf()})
 
 @app.route('/api/token')
 def get_token():
+    if not public_rate_ok(request.remote_addr):
+        return jsonify({'error': 'rate limited'}), 429
     return jsonify({'token': secrets.token_hex(32)})
 
 # ── LOGIN ──
@@ -336,10 +359,10 @@ def login():
     if not data:
         return jsonify({'granted': False, 'error': 'invalid request'})
 
-    username      = data.get('username', '').strip()
-    password      = data.get('password', '')
-    csrf_token    = data.get('csrf_token', '')
-    session_token = data.get('session_token', '') or secrets.token_hex(32)
+    username      = data.get('username', '').strip()[:50]
+    password      = data.get('password', '')[:128]
+    csrf_token    = data.get('csrf_token', '')[:128]
+    session_token = data.get('session_token', '')[:128] or secrets.token_hex(32)
     client_ip     = request.remote_addr
 
     if not validate_csrf(csrf_token):
@@ -388,6 +411,7 @@ def login():
         user_data = get_user(username)
         role = user_data['role'] if user_data else 'Member'
         sess_token = secrets.token_hex(32)
+        delete_session(username)  # Kill any existing session first
         create_session(username, client_ip, role, sess_token)
         session['user'] = username
         session['token'] = sess_token
@@ -777,20 +801,17 @@ def api_register_device():
     client_ip  = request.remote_addr
 
     if not username or not device_id or not public_key:
-        return jsonify({'error': 'missing fields'}), 400
+        return jsonify({'error': 'registration failed'}), 400
     if not check_device_reg_rate(client_ip):
-        return jsonify({'error': 'too many registration attempts, try again later'}), 429
+        return jsonify({'error': 'registration failed'}), 429
     if not get_user(username):
-        return jsonify({'error': 'user not found'}), 404
+        return jsonify({'error': 'registration failed'}), 400
 
-    register_device(username, device_id, public_key, label)
-
-    # ── Auto-whitelist the IP on registration — Node 3 now has real work ──
-    add_to_whitelist(client_ip, f'{username} ({label[:30]})')
-    print(f"Auto-whitelisted {client_ip} for '{username}'")
+    register_device(username, device_id, public_key, label, registered_ip=client_ip)
 
     if username == 'admin':
         approve_device(device_id)
+        add_to_whitelist(client_ip, f'admin ({label[:30]})')
         return jsonify({'status': 'approved'})
 
     pending = len(get_pending_devices())
@@ -812,9 +833,9 @@ def api_update_ip():
     client_ip        = request.remote_addr
 
     if not all([username, device_id, device_signature, device_message]):
-        return jsonify({'error': 'missing fields'}), 400
+        return jsonify({'error': 'request failed'}), 400
     if not check_device_reg_rate(client_ip, max_attempts=5, window=3600):
-        return jsonify({'error': 'too many IP update attempts'}), 429
+        return jsonify({'error': 'request failed'}), 429
 
     # Verify device signature before allowing IP update
     verify_payload = {
@@ -835,11 +856,13 @@ def api_update_ip():
 
 @app.route('/api/device-status')
 def api_device_status():
+    # Only the device itself needs to check status (pre-login)
+    # Return minimal info — don't expose username or label
     device_id = request.args.get('device_id', '')
     if not device_id: return jsonify({'status': 'unknown'})
     device = get_device(device_id)
     if not device: return jsonify({'status': 'not_registered'})
-    return jsonify({'status': device['status'], 'username': device['username'], 'label': device['label']})
+    return jsonify({'status': device['status']})
 
 @app.route('/api/devices')
 def api_devices():
@@ -857,9 +880,14 @@ def api_devices():
 def api_device_approve():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     data = request.get_json()
-    approve_device(data['device_id'])
-    socketio.emit('device_approved', {'device_id': data['device_id']})
-    log_admin('approve_device', data['device_id'])
+    device_id = data['device_id']
+    approve_device(device_id)
+    device = get_device(device_id)
+    if device and device.get('registered_ip'):
+        add_to_whitelist(device['registered_ip'], f"{device['username']} ({device['label'][:30]})")
+        print(f"Auto-whitelisted {device['registered_ip']} for '{device['username']}' on approval")
+    socketio.emit('device_approved', {'device_id': device_id})
+    log_admin('approve_device', device_id)
     return jsonify({'success': True})
 
 @app.route('/api/devices/reject', methods=['POST'])

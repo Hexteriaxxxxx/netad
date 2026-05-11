@@ -333,15 +333,15 @@ def get_chat_logs(limit=50):
 # DEVICE KEYS (Web Crypto + IndexedDB device auth)
 # ================================================
 
-def register_device(username, device_id, public_key_jwk, label='Unknown Device'):
+def register_device(username, device_id, public_key_jwk, label='Unknown Device', registered_ip=''):
     with get_db() as conn:
         cur = get_cursor(conn)
         cur.execute("""
-            INSERT INTO device_keys (username, device_id, public_key, label, status)
-            VALUES (%s, %s, %s, %s, 'pending')
+            INSERT INTO device_keys (username, device_id, public_key, label, status, registered_ip)
+            VALUES (%s, %s, %s, %s, 'pending', %s)
             ON CONFLICT (device_id) DO UPDATE
-            SET public_key = EXCLUDED.public_key, username = EXCLUDED.username
-        """, (username, device_id, public_key_jwk, label))
+            SET public_key = EXCLUDED.public_key, username = EXCLUDED.username, registered_ip = EXCLUDED.registered_ip
+        """, (username, device_id, public_key_jwk, label, registered_ip))
 
 def get_device(device_id):
     with get_db() as conn:
