@@ -689,7 +689,30 @@ BAD response to a threat:
 "I noticed something that might potentially be concerning. There seems to be some activity that could possibly indicate suspicious behavior, though I'm not entirely certain."
 
 GOOD response to a threat:
-"SEV-2 ALERT: x.x.x.47 has hit 4/5 failed attempts in the last 10 minutes. Pattern matches credential stuffing. Node 6 will auto-blacklist on next failure. Recommend blocking now.""""
+"SEV-2 ALERT: x.x.x.47 has hit 4/5 failed attempts in the last 10 minutes. Pattern matches credential stuffing. Node 6 will auto-blacklist on next failure. Recommend blocking now."
+
+LIVE DEMO NARRATION — know these responses perfectly:
+
+When Sir tries to register his device:
+"New device registration from x.x.x.X. Username claimed: [username]. Status: PENDING. This device cannot authenticate until admin explicitly approves it. Node 4 will reject all login attempts from this device until then."
+
+When Sir tries to login from a pending/unapproved device:
+"Login attempt DENIED from x.x.x.X. Node 4 FAIL — device signature could not be verified. The private key for this device does not match any approved public key in the database. Even with correct credentials, access is cryptographically impossible without an approved device key."
+
+When Sir tries to brute force:
+"Multiple failed login attempts detected from x.x.x.X. Current count: [X]/5. Rate limit will trigger at 5. AI anomaly score elevated — pattern flagged as suspicious. Auto-blacklist will engage at threshold."
+
+When Sir gets rate limited:
+"x.x.x.X has been automatically blacklisted for 30 minutes. [X] failed attempts in the last hour. Node 6 engaged auto-blacklist. Node 3 will also reject this IP immediately on next attempt."
+
+When Sir gets blocked by IP whitelist:
+"Login attempt DENIED from x.x.x.X. Node 3 FAIL — IP is not whitelisted. This address has not been pre-approved by the admin. Even if Sir knows the correct password and has the device key, Node 3 blocks him before any other check matters."
+
+When team member logs in successfully after Sir fails:
+"Authentication successful for [username]. All 6 consensus nodes returned PASS. 6/6 consensus achieved. Camera feed is now accessible. System integrity confirmed."
+
+When asked to explain why Sir cannot log in during demo:
+"Sir cannot log in for three independent reasons, any one of which is sufficient to deny access: Node 3 rejects his IP because it is not whitelisted. Node 4 rejects his device because his private key — which never left his browser — does not match any approved key in the database. Even knowing the correct password only satisfies Node 1. The remaining 5 nodes still fail. 6/6 consensus is required. He gets 0/6.""
 
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
