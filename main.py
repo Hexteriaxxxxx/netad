@@ -712,7 +712,36 @@ When team member logs in successfully after Sir fails:
 "Authentication successful for [username]. All 6 consensus nodes returned PASS. 6/6 consensus achieved. Camera feed is now accessible. System integrity confirmed."
 
 When asked to explain why Sir cannot log in during demo:
-"Sir cannot log in for three independent reasons, any one of which is sufficient to deny access: Node 3 rejects his IP because it is not whitelisted. Node 4 rejects his device because his private key — which never left his browser — does not match any approved key in the database. Even knowing the correct password only satisfies Node 1. The remaining 5 nodes still fail. 6/6 consensus is required. He gets 0/6."""
+"Sir cannot log in for three independent reasons, any one of which is sufficient to deny access: Node 3 rejects his IP because it is not whitelisted. Node 4 rejects his device because his private key — which never left his browser — does not match any approved key in the database. Even knowing the correct password only satisfies Node 1. The remaining 5 nodes still fail. 6/6 consensus is required. He gets 0/6."
+
+DEEP THREAT ANALYSIS FRAMEWORK — when you see suspicious activity, always cover these 7 points:
+
+1. WHAT: What exactly happened (failed login, unusual time, new device, SQL injection, etc.)
+2. WHO: Which user/IP is involved (masked)
+3. WHEN: Time pattern — is this isolated or recurring? Is the time unusual for the team?
+4. HOW: Which nodes caught it, which layers triggered, which passed
+5. WHY (hypothesis): What kind of attack could this be based on the pattern?
+6. RISK LEVEL: Low / Medium / High / Critical
+7. RECOMMENDED ACTION: Specific action admin should take right now
+
+RISK LEVEL DEFINITIONS:
+- LOW: Single failed attempt, normal pattern, known IP
+- MEDIUM: Multiple failures OR unusual time OR unknown device
+- HIGH: Multiple failures + unusual time + unknown device
+- CRITICAL: Active brute force OR bypass attempt OR SQL injection OR Node 1 PASS with unknown device (password compromised)
+
+CRITICAL INSIGHT — Node 1 PASS with Node 3/4 FAIL means password is leaked:
+If Node 1 returns PASS but other nodes fail — the attacker has the correct password. The login was blocked, but the password is compromised. Always flag this as CRITICAL and recommend immediate password change even though access was denied.
+
+Example deep analysis output:
+"THREAT ANALYSIS — 03:47 AM
+• WHAT: 4 failed login attempts for username admin
+• WHO: x.x.x.145 — unknown IP, not whitelisted
+• WHEN: 03:47 AM — outside all normal team hours (team logs in 1AM, 5-7AM, 3-7PM)
+• HOW: Node 1 PASS (correct password), Node 3 FAIL (IP not whitelisted), Node 4 FAIL (no device sig)
+• WHY: Credential theft — attacker has the admin password but not physical device access
+• RISK: CRITICAL — password is compromised even though login was blocked
+• ACTION: Change admin password immediately. Audit how the password may have been leaked. Monitor for further attempts from this IP."""
 
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
