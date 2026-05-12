@@ -42,7 +42,6 @@ if ALLOWED_ORIGIN == '*':
     raise RuntimeError("ALLOWED_ORIGIN=* is not allowed.")
 socketio = SocketIO(app, cors_allowed_origins=ALLOWED_ORIGIN)
 
-# ── SECURITY HEADERS ──
 @app.after_request
 def security_headers(response):
     response.headers['X-Frame-Options']       = 'DENY'
@@ -67,61 +66,46 @@ def on_subscribe_dashboard():
     if 'user' not in session:
         return False
 
-# ── CAMERA CONFIG ──
-CAMERA_URLS = {
-    1: os.environ.get('CAMERA_1_URL', ''),
-    2: os.environ.get('CAMERA_2_URL', ''),
-}
-
+# ── CAMERA ──
+CAMERA_URLS = {1: os.environ.get('CAMERA_1_URL', ''), 2: os.environ.get('CAMERA_2_URL', '')}
 _consensus_granted = False
 _consensus_lock = threading.Lock()
 
-def set_consensus_state(granted: bool):
+def set_consensus_state(granted):
     global _consensus_granted
-    with _consensus_lock:
-        _consensus_granted = granted
+    with _consensus_lock: _consensus_granted = granted
 
-def is_consensus_granted() -> bool:
-    with _consensus_lock:
-        return _consensus_granted
+def is_consensus_granted():
+    with _consensus_lock: return _consensus_granted
 
-def generate_camera_stream(cam_id: int):
+def generate_camera_stream(cam_id):
     url = CAMERA_URLS.get(cam_id, '')
-    if not url:
-        yield b''
-        return
+    if not url: yield b''; return
     try:
         import cv2
         cap = cv2.VideoCapture(url)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         while True:
-            if not is_consensus_granted():
-                break
+            if not is_consensus_granted(): break
             ret, frame = cap.read()
             if not ret:
-                cap.release()
-                time.sleep(2)
-                cap = cv2.VideoCapture(url)
-                continue
-            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
-            if not ret:
-                continue
-            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                cap.release(); time.sleep(2); cap = cv2.VideoCapture(url); continue
+            ret, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            if ret: yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
             time.sleep(0.033)
-    except Exception as e:
-        print(f"Camera {cam_id} error: {e}")
+    except Exception as e: print(f"Camera {cam_id} error: {e}")
 
 @app.route('/api/camera/<int:cam_id>/stream')
-def camera_stream(cam_id: int):
+def camera_stream(cam_id):
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    if not CAMERA_URLS.get(cam_id): return jsonify({'error': f'CAMERA_{cam_id}_URL not configured'}), 503
+    if not CAMERA_URLS.get(cam_id): return jsonify({'error': 'not configured'}), 503
     if not is_consensus_granted(): return jsonify({'error': 'consensus not met'}), 403
     return Response(generate_camera_stream(cam_id), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/api/camera/status')
 def camera_status():
-    granted = is_consensus_granted()
-    return jsonify({'accessible': granted, 'cameras': {str(i): {'configured': bool(u), 'accessible': granted and bool(u)} for i, u in CAMERA_URLS.items()}})
+    g = is_consensus_granted()
+    return jsonify({'accessible': g, 'cameras': {str(i): {'configured': bool(u), 'accessible': g and bool(u)} for i, u in CAMERA_URLS.items()}})
 
 # ══════════════════════════════════════════════════
 # INLINE NODES
@@ -129,40 +113,29 @@ def camera_status():
 
 def node1_password(payload):
     import bcrypt, hashlib
-    username = payload.get('username', '')
-    password = payload.get('password', '')
+    username, password = payload.get('username',''), payload.get('password','')
     if not username or not password: return 'FAIL'
     try:
         user = get_user(username)
         if not user: return 'FAIL'
-        stored = user['password_hash']
-        if stored.startswith('$2b$') or stored.startswith('$2a$'):
-            result = bcrypt.checkpw(password.encode(), stored.encode())
-        else:
-            result = stored == hashlib.sha256(password.encode()).hexdigest()
+        s = user['password_hash']
+        result = bcrypt.checkpw(password.encode(), s.encode()) if s.startswith('$2') else s == hashlib.sha256(password.encode()).hexdigest()
         print(f"Node 1 {'PASS' if result else 'FAIL'}: {username}")
         return 'PASS' if result else 'FAIL'
-    except Exception as e:
-        print(f"Node 1 error: {e}")
-        return 'FAIL'
+    except Exception as e: print(f"Node 1 error: {e}"); return 'FAIL'
 
 def node2_timestamp(payload):
     import time as t
-    ts = payload.get('timestamp', 0)
-    age = t.time() - ts
-    if age > 30 or age < 0:
-        print(f"Node 2 FAIL: age={age:.1f}s")
-        return 'FAIL'
-    print(f"Node 2 PASS: {age:.1f}s old")
-    return 'PASS'
+    age = t.time() - payload.get('timestamp', 0)
+    ok = 0 <= age <= 30
+    print(f"Node 2 {'PASS' if ok else 'FAIL'}: {age:.1f}s")
+    return 'PASS' if ok else 'FAIL'
 
 def node3_ip_whitelist(payload):
     ip = payload.get('ip', '')
-    if is_whitelisted(ip):
-        print(f"Node 3 PASS: {ip} whitelisted")
-        return 'PASS'
-    print(f"Node 3 FAIL: {ip} not whitelisted")
-    return 'FAIL'
+    ok = is_whitelisted(ip)
+    print(f"Node 3 {'PASS' if ok else 'FAIL'}: {ip}")
+    return 'PASS' if ok else 'FAIL'
 
 def node4_device_signature(payload):
     username  = payload.get('username', '')
@@ -170,15 +143,12 @@ def node4_device_signature(payload):
     sig_b64   = payload.get('device_signature', '')
     message   = payload.get('device_message', '')
     if not all([username, device_id, sig_b64, message]):
-        print("Node 4 FAIL: missing device auth fields")
-        return 'FAIL'
+        print("Node 4 FAIL: missing fields"); return 'FAIL'
     try:
         from cryptography.hazmat.primitives.asymmetric.ec import ECDSA, EllipticCurvePublicNumbers, SECP256R1
         from cryptography.hazmat.primitives import hashes
         pub_jwk_str = get_device_public_key(username, device_id)
-        if not pub_jwk_str:
-            print(f"Node 4 FAIL: device not approved for '{username}'")
-            return 'FAIL'
+        if not pub_jwk_str: print(f"Node 4 FAIL: no approved key for '{username}'"); return 'FAIL'
         jwk = json.loads(pub_jwk_str)
         def b64u(s):
             pad = 4 - len(s) % 4
@@ -192,40 +162,25 @@ def node4_device_signature(payload):
             if n[0] & 0x80: n = b'\x00' + n
             return bytes([0x02, len(n)]) + n
         body = enc(r) + enc(s)
-        sig_der = bytes([0x30, len(body)]) + body
-        pub_key.verify(sig_der, message.encode(), ECDSA(hashes.SHA256()))
-        print(f"Node 4 PASS: ECDSA valid for '{username}'")
-        return 'PASS'
-    except Exception as e:
-        print(f"Node 4 FAIL: {e}")
-        return 'FAIL'
+        pub_key.verify(bytes([0x30, len(body)]) + body, message.encode(), ECDSA(hashes.SHA256()))
+        print(f"Node 4 PASS: {username}"); return 'PASS'
+    except Exception as e: print(f"Node 4 FAIL: {e}"); return 'FAIL'
 
 def node5_session_token(payload):
     token = payload.get('session_token', '')
     if not token: return 'FAIL'
-    if claim_token(token):
-        print("Node 5 PASS: token claimed")
-        return 'PASS'
-    print("Node 5 FAIL: token already used")
-    return 'FAIL'
+    ok = claim_token(token)
+    print(f"Node 5 {'PASS' if ok else 'FAIL'}"); return 'PASS' if ok else 'FAIL'
 
 def node6_rate_limit(payload):
-    ip = payload.get('ip', 'unknown')
-    MAX = 5
-    if is_blacklisted(ip):
-        print(f"Node 6 FAIL: {ip} blacklisted")
-        return 'FAIL'
-    if is_whitelisted(ip):
-        count = get_all_failed_count(ip)
-        print(f"Node 6 PASS: {ip} whitelisted — rate limit skipped ({count} prev failures)")
-        return 'PASS'
+    ip, MAX = payload.get('ip', 'unknown'), 5
+    if is_blacklisted(ip): print(f"Node 6 FAIL: {ip} blacklisted"); return 'FAIL'
+    if is_whitelisted(ip): print(f"Node 6 PASS: {ip} whitelisted — skip rate limit"); return 'PASS'
     count = get_all_failed_count(ip)
     if count >= MAX:
         add_to_blacklist(ip, 'temporary', 1800)
-        print(f"Node 6 FAIL: {ip} rate limited ({count} attempts)")
-        return 'FAIL'
-    print(f"Node 6 PASS: {ip} — {count}/{MAX}")
-    return 'PASS'
+        print(f"Node 6 FAIL: {ip} rate limited ({count})"); return 'FAIL'
+    print(f"Node 6 PASS: {ip} {count}/{MAX}"); return 'PASS'
 
 INLINE_NODES = [
     ('Rate Limiting',         node6_rate_limit),
@@ -239,15 +194,12 @@ INLINE_NODES = [
 def run_consensus(payload):
     votes = [None] * len(INLINE_NODES)
     def run_node(i, name, fn):
-        try:
-            votes[i] = fn(payload)
-        except Exception as e:
-            print(f"Node {i+1} ({name}) exception: {e}")
-            votes[i] = 'FAIL'
-    threads = [threading.Thread(target=run_node, args=(i, name, fn)) for i, (name, fn) in enumerate(INLINE_NODES)]
+        try: votes[i] = fn(payload)
+        except Exception as e: print(f"Node {i+1} ({name}): {e}"); votes[i] = 'FAIL'
+    threads = [threading.Thread(target=run_node, args=(i, n, f)) for i, (n, f) in enumerate(INLINE_NODES)]
     for t in threads: t.start()
     for t in threads: t.join(timeout=6)
-    votes = [v if v else 'FAIL' for v in votes]
+    votes = [v or 'FAIL' for v in votes]
     steps = [{'layer': INLINE_NODES[i][0], 'result': votes[i]} for i in range(len(INLINE_NODES))]
     granted = all(v == 'PASS' for v in votes)
     print(f"Consensus: {votes} → {'GRANTED' if granted else 'DENIED'}")
@@ -257,46 +209,60 @@ def run_consensus(payload):
 _csrf_tokens: dict = {}
 _csrf_lock = threading.Lock()
 
-def generate_csrf() -> str:
+def generate_csrf():
     token = secrets.token_hex(32)
     with _csrf_lock:
         _csrf_tokens[token] = time.time() + 300
         expired = [t for t, exp in _csrf_tokens.items() if exp < time.time()]
-        for t in expired:
-            del _csrf_tokens[t]
+        for t in expired: del _csrf_tokens[t]
     return token
 
-def validate_csrf(token: str) -> bool:
+def validate_csrf(token):
     with _csrf_lock:
         if token not in _csrf_tokens: return False
         if _csrf_tokens[token] < time.time():
-            del _csrf_tokens[token]
-            return False
-        del _csrf_tokens[token]
-        return True
+            del _csrf_tokens[token]; return False
+        del _csrf_tokens[token]; return True
 
 def token_cleanup_worker():
     while True:
-        try:
-            cleanup_used_tokens()
-        except Exception as e:
-            print(f"Token cleanup error: {e}")
+        try: cleanup_used_tokens()
+        except Exception as e: print(f"Token cleanup: {e}")
         time.sleep(120)
 
-def _notify_guard(message: str):
+def mask_ip(ip):
+    parts = ip.split('.')
+    return f"x.x.x.{parts[-1]}" if len(parts) == 4 else 'x.x.x.x'
+
+def log_admin(action, target):
+    admin = session.get('user', 'system')
+    ip = request.remote_addr if request else 'internal'
+    add_log(admin, ip, 'ADMIN', f'{action}: {target}')
+
+def _notify_guard(message):
     try:
         add_chat_log('system', message)
         socketio.emit('chat_message', {'role': 'system', 'message': message})
-    except Exception:
-        pass
+    except Exception: pass
+
+# ── PUBLIC RATE LIMITER ──
+_public_rate: dict = {}
+_public_rate_lock = threading.Lock()
+
+def public_rate_ok(ip, max_per_min=15):
+    now = time.time()
+    with _public_rate_lock:
+        _public_rate.setdefault(ip, [])
+        _public_rate[ip] = [t for t in _public_rate[ip] if now - t < 60]
+        if len(_public_rate[ip]) >= max_per_min: return False
+        _public_rate[ip].append(now); return True
 
 # ══════════════════════════════════════════════════
 # ROUTES
 # ══════════════════════════════════════════════════
 
 @app.route('/')
-def index():
-    return render_template('login.html')
+def index(): return render_template('login.html')
 
 @app.route('/dashboard')
 def dashboard():
@@ -307,22 +273,8 @@ def dashboard():
 def logout():
     user = session.get('user')
     if user: delete_session(user)
-    session.clear()
-    set_consensus_state(False)
+    session.clear(); set_consensus_state(False)
     return redirect('/')
-
-# ── PUBLIC RATE LIMITER ──
-_public_rate: dict = {}
-_public_rate_lock = threading.Lock()
-
-def public_rate_ok(ip: str, max_per_min: int = 15) -> bool:
-    now = time.time()
-    with _public_rate_lock:
-        _public_rate.setdefault(ip, [])
-        _public_rate[ip] = [t for t in _public_rate[ip] if now - t < 60]
-        if len(_public_rate[ip]) >= max_per_min: return False
-        _public_rate[ip].append(now)
-        return True
 
 @app.route('/api/csrf')
 def get_csrf():
@@ -334,7 +286,6 @@ def get_token():
     if not public_rate_ok(request.remote_addr): return jsonify({'error': 'rate limited'}), 429
     return jsonify({'token': secrets.token_hex(32)})
 
-# ── LOGIN ──
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -350,26 +301,18 @@ def login():
     try:
         from ai.anomaly import is_suspicious
         suspicious, score = is_suspicious(client_ip, username)
-        if suspicious:
+        if suspicious and not is_whitelisted(client_ip):
+            add_log(username, client_ip, 'SUSPICIOUS', f'AI flagged (score={score:.3f})')
             add_ai_log(client_ip, username, 'Suspicious login pattern detected', score, True)
-            socketio.emit('ai_alert', {'ip': client_ip, 'username': username, 'score': float(score), 'message': f'Anomalous login from {client_ip}'})
+            socketio.emit('ai_alert', {'ip': client_ip, 'username': username, 'score': float(score), 'message': f'Anomalous login from {mask_ip(client_ip)}'})
             _notify_guard(f"🚨 AI flagged suspicious login from {mask_ip(client_ip)} (user: '{username}', score: {score:.3f})")
-            # Only hard-block if IP is NOT whitelisted
-            # Whitelisted IPs are trusted — warn only, let nodes decide
-            if not is_whitelisted(client_ip):
-                add_log(username, client_ip, 'SUSPICIOUS', f'AI flagged (score={score:.3f})')
-                return jsonify({'granted': False, 'error': 'suspicious behavior detected', 'steps': [{'layer': 'AI Anomaly', 'result': 'FAIL'}]})
-            else:
-                add_log(username, client_ip, 'AI_WARN', f'AI flagged but whitelisted — continuing (score={score:.3f})')
-    except Exception as e:
-        print(f"AI check error: {e}")
+            return jsonify({'granted': False, 'error': 'suspicious behavior detected', 'steps': [{'layer': 'AI Anomaly', 'result': 'FAIL'}]})
+    except Exception as e: print(f"AI check error: {e}")
     block = Block({'username': username, 'password': password, 'ip': client_ip})
     try:
         from security.signer import sign_request
         signature = sign_request(block.hash)
-    except Exception as e:
-        print(f"Signing error (non-fatal): {e}")
-        signature = ''
+    except Exception: signature = ''
     payload = {
         'username': username, 'password': password, 'ip': client_ip,
         'timestamp': block.timestamp, 'hash': block.hash, 'signature': signature,
@@ -398,11 +341,9 @@ def login():
 def node_status():
     try:
         from database import get_db
-        with get_db() as conn:
-            conn.cursor().execute('SELECT 1')
+        with get_db() as conn: conn.cursor().execute('SELECT 1')
         db_ok = True
-    except Exception:
-        db_ok = False
+    except Exception: db_ok = False
     return jsonify({'password': db_ok, 'timestamp': True, 'ip_whitelist': db_ok, 'digital_sig': True, 'session_token': db_ok, 'rate_limit': db_ok})
 
 @app.route('/api/logs')
@@ -485,11 +426,9 @@ def api_sessions_kick():
 def api_session_heartbeat():
     username = request.get_json().get('username', '')
     update_session_heartbeat(username)
-    active = get_sessions()
-    still_valid = any(s['username'] == username for s in active)
+    still_valid = any(s['username'] == username for s in get_sessions())
     if not still_valid:
-        session.clear()
-        set_consensus_state(False)
+        session.clear(); set_consensus_state(False)
         return jsonify({'ok': False, 'kicked': True})
     return jsonify({'ok': True})
 
@@ -499,44 +438,38 @@ def api_ai_logs():
     return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_ai_logs(20)])
 
 # ══════════════════════════════════════════════════
-# GUARD AI — tools + chat
+# GUARD AI — Level 100 Final Boss
 # ══════════════════════════════════════════════════
 
-# NOTE: kick_session is included but heavily restricted via system prompt.
 GUARD_TOOLS = [
     {'type': 'function', 'function': {
-        'name': 'block_ip',
-        'description': 'Block an IP address and add it to the blacklist for 30 minutes.',
+        'name': 'block_ip', 'description': 'Block an IP for 30 minutes.',
         'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
     }},
     {'type': 'function', 'function': {
-        'name': 'forgive_ip',
-        'description': 'Remove an IP from the blacklist and clear its failed login history.',
+        'name': 'forgive_ip', 'description': 'Remove IP from blacklist and clear rate limit.',
         'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
     }},
     {'type': 'function', 'function': {
-        'name': 'clear_rate_limit',
-        'description': 'Clear failed login attempts for an IP so they can try again.',
+        'name': 'clear_rate_limit', 'description': 'Clear failed login attempts for an IP.',
         'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
     }},
     {'type': 'function', 'function': {
-        'name': 'add_whitelist',
-        'description': 'Add an IP to the whitelist.',
+        'name': 'add_whitelist', 'description': 'Add an IP to the whitelist.',
         'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}, 'label': {'type': 'string'}}, 'required': ['ip']}
     }},
     {'type': 'function', 'function': {
-        'name': 'remove_whitelist',
-        'description': 'Remove an IP from the whitelist.',
+        'name': 'remove_whitelist', 'description': 'Remove an IP from the whitelist.',
         'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
     }},
     {'type': 'function', 'function': {
         'name': 'kick_session',
-        'description': 'Force logout a specific user by their exact username. ONLY call this when the user explicitly says to kick a specific named person.',
-        'parameters': {'type': 'object', 'properties': {'username': {'type': 'string', 'description': 'The exact username to kick'}}, 'required': ['username']}
+        'description': 'Force logout a specific user. ONLY call this when admin explicitly names the person to kick. NEVER call this just because users are listed in a status query.',
+        'parameters': {'type': 'object', 'properties': {'username': {'type': 'string'}}, 'required': ['username']}
     }},
 ]
 
-def _run_tool(tool_name: str, args: dict) -> str:
+def _run_tool(tool_name, args):
     try:
         if tool_name == 'block_ip':
             ip = args['ip']; add_to_blacklist(ip, 'temporary', 1800); socketio.emit('guard_action', {'action': 'block_ip', 'ip': ip}); return f"Blocked {ip} for 30 minutes."
@@ -549,22 +482,11 @@ def _run_tool(tool_name: str, args: dict) -> str:
         elif tool_name == 'remove_whitelist':
             ip = args['ip']; remove_from_whitelist(ip); socketio.emit('guard_action', {'action': 'remove_whitelist', 'ip': ip}); return f"Removed {ip} from whitelist."
         elif tool_name == 'kick_session':
-            username = args['username']; delete_session(username); socketio.emit('session_kicked', {'username': username}); log_admin('kick_session', username); return f"Kicked {username} — session terminated."
-        else:
-            return f"Unknown tool: {tool_name}"
-    except Exception as e:
-        return f"Tool error: {e}"
+            username = args['username']; delete_session(username); socketio.emit('session_kicked', {'username': username}); log_admin('kick_session', username); return f"Kicked {username}."
+        else: return f"Unknown tool: {tool_name}"
+    except Exception as e: return f"Tool error: {e}"
 
-def mask_ip(ip: str) -> str:
-    parts = ip.split('.')
-    return f"x.x.x.{parts[-1]}" if len(parts) == 4 else 'x.x.x.x'
-
-def log_admin(action: str, target: str):
-    admin = session.get('user', 'system')
-    ip = request.remote_addr if request else 'internal'
-    add_log(admin, ip, 'ADMIN', f'{action}: {target}')
-
-def _get_system_context() -> str:
+def _get_system_context():
     try:
         logs     = get_logs(10)
         ai_logs  = get_ai_logs(5)
@@ -574,23 +496,82 @@ def _get_system_context() -> str:
         pending  = get_pending_devices()
         online   = [s for s in sessions if s.get('online')]
         ctx  = "=== LIVE NETAD SYSTEM STATE ===\n"
-        ctx += f"Camera access: {'OPEN' if is_consensus_granted() else 'LOCKED'}\n"
-        ctx += f"All 6 nodes: ONLINE (always active)\n"
-        ctx += f"Pending device approvals: {len(pending)}\n"
-        ctx += f"Active sessions ({len(online)} online):\n"
+        ctx += f"Camera: {'OPEN' if is_consensus_granted() else 'LOCKED'}\n"
+        ctx += f"Nodes: ALL 6 ONLINE\n"
+        ctx += f"Pending devices: {len(pending)}\n"
+        ctx += f"Sessions ({len(online)} online):\n"
         for s in sessions:
-            status = 'ONLINE' if s.get('online') else 'OFFLINE'
-            ctx += f"  - {s.get('username','')} | {status} | ip={mask_ip(str(s.get('ip','')))} | role={s.get('role','')}\n"
-        ctx += "\nRecent logs:\n"
+            ctx += f"  - {s.get('username','')} | {'ONLINE' if s.get('online') else 'OFFLINE'} | {mask_ip(str(s.get('ip','')))} | {s.get('role','')}\n"
+        ctx += "Recent logs:\n"
         for l in logs:
-            ctx += f"  [{l.get('timestamp','')}] {l.get('result','')} — user={l.get('username','')} ip={mask_ip(str(l.get('ip','')))} reason={l.get('reason','')}\n"
-        ctx += "\nAI flags:\n"
+            ctx += f"  [{str(l.get('timestamp',''))[:19]}] {l.get('result','')} user={l.get('username','')} ip={mask_ip(str(l.get('ip','')))} {l.get('reason','')}\n"
+        ctx += "AI flags:\n"
         for a in ai_logs:
-            ctx += f"  ip={mask_ip(str(a.get('ip','')))} user={a.get('username','')} score={a.get('score','')} flagged={a.get('flagged','')}\n"
-        ctx += f"\nBlacklisted: {len(bl)} IPs\nWhitelisted: {len(wl)} IPs\n"
+            ctx += f"  {mask_ip(str(a.get('ip','')))} user={a.get('username','')} score={a.get('score','')} flagged={a.get('flagged','')}\n"
+        ctx += f"Blacklisted: {len(bl)} | Whitelisted: {len(wl)}\n"
         return ctx
-    except Exception as e:
-        return f"(context error: {e})"
+    except Exception as e: return f"(context error: {e})"
+
+GUARD_SYSTEM_PROMPT = """You are NETAD Guard — the AI security officer of the NETAD (Network Enhanced Threat and Anomaly Detection) system. A production multi-layer camera security system built by a 7-person development team in the Philippines.
+
+YOUR ARCHITECTURE:
+6 consensus nodes — ALL must PASS simultaneously for camera access:
+- Node 1: Password verification (bcrypt cost-12, PostgreSQL)
+- Node 2: Request timestamp (30-second expiry, replay protection)
+- Node 3: IP whitelist (auto-whitelisted only on admin device approval)
+- Node 4: ECDSA P-256 device signature (private key NON-EXPORTABLE — never leaves browser)
+- Node 5: One-time session token (atomic INSERT ON CONFLICT — TOCTOU-safe)
+- Node 6: Rate limiting (5 attempts/hour, auto-blacklist 30 min)
+AI Layer (runs before nodes): Isolation Forest anomaly detection.
+
+YOUR TEAM — the ONLY authorized users:
+- admin (Gian) — Project Manager, auto-approved device
+- kevin — Lead Developer
+- josiah — Co-Lead Developer
+- jm — Node Developer A
+- karl — Security Designer
+- nico — Multi-role Developer
+- lj — Node Developer B
+
+NORMAL LOGIN PATTERNS:
+- Hours: 1AM, 5AM, 6AM, 7AM, 3PM, 4PM, 7PM Philippine time
+- All logins from Philippine IP addresses
+- One approved device per member (their laptop)
+- 1-3 logins per day, 30-90 minute sessions
+
+SUSPICIOUS PATTERNS (flag these immediately):
+- Login attempts at 2AM-4AM (outside normal team hours)
+- More than 3 attempts in 60 seconds from one IP
+- Usernames not in the authorized team list above
+- IPs from outside the Philippines
+- Device registration from an unknown device
+- Login attempts immediately after a session was kicked
+
+THE DEMO SCENARIO — know this perfectly:
+The system proves that even if an examiner/professor ("Sir") knows the correct username and password, he CANNOT log in because:
+1. His device is not registered — Node 4 returns FAIL
+2. Even if he registers — admin will not approve it — Node 4 still FAIL
+3. His IP is not whitelisted — Node 3 also FAIL
+4. P-256 private key is mathematically impossible to forge — brute force time: 10^41 times the age of the universe
+
+If asked during demo "Can the professor log in if he knows the password?" say:
+"No. Knowing the password only passes Node 1. Node 3 rejects his IP since it is not whitelisted. Node 4 rejects his device since his private key — which never left his browser — does not match any approved public key in the database. Even with the correct password, 2 independent cryptographic layers block him. The camera stays locked."
+
+INCIDENT SEVERITY:
+SEV-1 CRITICAL: Active brute force, SQL injection, correct password from unknown device (password leaked)
+SEV-2 HIGH: Off-hours registration, rate limit at 4/5, unknown IP with correct username
+SEV-3 MEDIUM: Single unknown IP, off-hours successful login from known device
+SEV-4 LOW: Normal team login, device approved, IP whitelisted
+
+STRICT RULES:
+1. Informational questions (who is online, show logs, show sessions, show devices, how many failed, is camera on, node status) — NEVER call any tool. Just report the data.
+2. Only call tools when admin uses explicit command words: block, forgive, clear, add, remove, kick [specific name].
+3. NEVER call kick_session just because you see a list of users. Only kick when admin says "kick [name]" explicitly.
+4. NEVER take action without an explicit command.
+5. ALWAYS mask IPs as x.x.x.X — never show full IPs.
+6. Speak with authority. No hedging. No "I think" or "maybe" about security facts.
+7. Be proactive — surface suspicious patterns even when not asked.
+8. During demo — narrate what is happening across the nodes in real time with technical confidence."""
 
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
@@ -601,28 +582,18 @@ def api_chat():
     groq_api_key = os.environ.get('GROQ_API_KEY')
     if not groq_api_key: return jsonify({'reply': 'Groq API key not configured.'})
 
+    sender = session.get('user', 'unknown')
     add_chat_log('user', user_message)
-    # Broadcast user message to all connected clients (GC effect)
+
+    # ── Broadcast user message to all clients (Group Chat) ──
     socketio.emit('chat_message', {
         'role': 'user',
         'message': user_message,
-        'sender': session.get('user', 'unknown')
+        'sender': sender
     })
+
     chat_history = get_chat_logs(20)
-
-    system_prompt = (
-        "You are NETAD Guard, an AI security officer for the NETAD security system.\n"
-        "You have real-time access to logs, sessions, devices, blacklist, and whitelist.\n"
-        "You speak professionally and concisely.\n\n"
-        "STRICT RULES:\n"
-        "- For ANY informational question (who is online, show logs, show sessions, etc.) — just answer, NEVER call a tool.\n"
-        "- Only call kick_session when the user EXPLICITLY says to kick a SPECIFIC person by name. Example: 'kick kevin', 'remove nico'. NEVER call kick_session just because you see a list of users.\n"
-        "- Only call block_ip when user explicitly says 'block [ip]'.\n"
-        "- Only call other tools when explicitly requested.\n"
-        "- When in doubt — describe, do not act.\n\n"
-        + _get_system_context()
-    )
-
+    system_prompt = GUARD_SYSTEM_PROMPT + "\n\n" + _get_system_context()
     messages = [{'role': 'system', 'content': system_prompt}]
     for msg in chat_history[-16:]:
         if msg.get('role') == 'system': continue
@@ -633,7 +604,6 @@ def api_chat():
         from groq import Groq
         client = Groq(api_key=groq_api_key)
         executed_actions = []
-
         response = client.chat.completions.create(
             model='llama-3.3-70b-versatile',
             messages=messages,
@@ -643,11 +613,9 @@ def api_chat():
             temperature=0.3
         )
         msg_obj = response.choices[0].message
-
         if msg_obj.tool_calls:
             messages.append({
-                'role': 'assistant',
-                'content': msg_obj.content or '',
+                'role': 'assistant', 'content': msg_obj.content or '',
                 'tool_calls': [{'id': tc.id, 'type': 'function', 'function': {'name': tc.function.name, 'arguments': tc.function.arguments}} for tc in msg_obj.tool_calls]
             })
             for tc in msg_obj.tool_calls:
@@ -661,9 +629,9 @@ def api_chat():
             reply = (msg_obj.content or '').strip() or 'No response from guard.'
 
         add_chat_log('assistant', reply)
+        # ── Broadcast AI reply to all clients ──
         socketio.emit('chat_message', {'role': 'assistant', 'message': reply})
         return jsonify({'reply': reply, 'action_result': executed_actions})
-
     except Exception as e:
         return jsonify({'reply': f'Guard unavailable: {e}'})
 
@@ -676,19 +644,18 @@ def api_chat_history():
 _device_reg_attempts: dict = {}
 _device_reg_lock = threading.Lock()
 
-def check_device_reg_rate(ip: str, max_attempts: int = 3, window: int = 3600) -> bool:
+def check_device_reg_rate(ip, max_attempts=3, window=3600):
     now = time.time()
     with _device_reg_lock:
         _device_reg_attempts.setdefault(ip, [])
         _device_reg_attempts[ip] = [t for t in _device_reg_attempts[ip] if now - t < window]
         if len(_device_reg_attempts[ip]) >= max_attempts: return False
-        _device_reg_attempts[ip].append(now)
-        return True
+        _device_reg_attempts[ip].append(now); return True
 
 # ── DEVICE ROUTES ──
 @app.route('/api/register-device', methods=['POST'])
 def api_register_device():
-    data       = request.get_json()
+    data = request.get_json()
     username   = data.get('username', '').strip()
     device_id  = data.get('device_id', '').strip()
     public_key = data.get('public_key', '').strip()
@@ -708,14 +675,12 @@ def api_register_device():
 
 @app.route('/api/update-ip', methods=['POST'])
 def api_update_ip():
-    data             = request.get_json()
-    username         = data.get('username', '').strip()
-    device_id        = data.get('device_id', '').strip()
-    device_signature = data.get('device_signature', '')
-    device_message   = data.get('device_message', '')
-    client_ip        = request.remote_addr
+    data = request.get_json()
+    username, device_id = data.get('username','').strip(), data.get('device_id','').strip()
+    device_signature, device_message = data.get('device_signature',''), data.get('device_message','')
+    client_ip = request.remote_addr
     if not all([username, device_id, device_signature, device_message]): return jsonify({'error': 'request failed'}), 400
-    if not check_device_reg_rate(client_ip, max_attempts=5, window=3600): return jsonify({'error': 'request failed'}), 429
+    if not check_device_reg_rate(client_ip, max_attempts=5): return jsonify({'error': 'request failed'}), 429
     verify_payload = {'username': username, 'device_id': device_id, 'device_signature': device_signature, 'device_message': device_message}
     if node4_device_signature(verify_payload) != 'PASS':
         add_log(username, client_ip, 'DENIED', 'IP update — invalid device signature')
@@ -739,8 +704,7 @@ def api_devices():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     result = []
     for d in get_all_devices():
-        row = dict(d)
-        row.pop('public_key', None)
+        row = dict(d); row.pop('public_key', None)
         if row.get('created_at'): row['created_at'] = str(row['created_at'])
         if row.get('approved_at'): row['approved_at'] = str(row['approved_at'])
         result.append(row)
@@ -749,8 +713,7 @@ def api_devices():
 @app.route('/api/devices/approve', methods=['POST'])
 def api_device_approve():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    data = request.get_json()
-    device_id = data['device_id']
+    device_id = request.get_json()['device_id']
     approve_device(device_id)
     device = get_device(device_id)
     if device and device.get('registered_ip'):
@@ -771,32 +734,6 @@ def api_device_delete():
     delete_device(request.get_json()['device_id'])
     return jsonify({'success': True})
 
-@app.route('/api/users/add', methods=['POST'])
-def api_add_user():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    data = request.get_json()
-    username = data.get('username', '').strip()[:50]
-    password = data.get('password', '')[:128]
-    role     = data.get('role', 'Security Officer')[:50]
-    if not username or not password:
-        return jsonify({'error': 'username and password required'}), 400
-    import bcrypt
-    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
-    try:
-        from database import get_db, get_cursor
-        with get_db() as conn:
-            cur = get_cursor(conn)
-            cur.execute(
-                "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s) ON CONFLICT (username) DO NOTHING",
-                (username, hashed, role)
-            )
-            if cur.rowcount == 0:
-                return jsonify({'error': 'username already exists'}), 409
-        log_admin('add_user', username)
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/api/users', methods=['GET'])
 def api_get_users():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
@@ -806,9 +743,30 @@ def api_get_users():
         cur.execute("SELECT username, role FROM users ORDER BY username")
         return jsonify([dict(r) for r in cur.fetchall()])
 
+@app.route('/api/users/add', methods=['POST'])
+def api_add_user():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    data = request.get_json()
+    username = data.get('username', '').strip()[:50]
+    password = data.get('password', '')[:128]
+    role     = data.get('role', 'Security Officer')[:50]
+    if not username or not password: return jsonify({'error': 'username and password required'}), 400
+    import bcrypt
+    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
+    try:
+        from database import get_db, get_cursor
+        with get_db() as conn:
+            cur = get_cursor(conn)
+            cur.execute("INSERT INTO users (username, password_hash, role, display_name) VALUES (%s, %s, %s, %s) ON CONFLICT (username) DO NOTHING",
+                        (username, hashed, role, username))
+            if cur.rowcount == 0: return jsonify({'error': 'username already exists'}), 409
+        log_admin('add_user', username)
+        return jsonify({'success': True})
+    except Exception as e: return jsonify({'error': str(e)}), 500
+
 # ── MAIN ──
 if __name__ == '__main__':
-    print("Starting NETAD Security System (inline nodes)...")
+    print("Starting NETAD Security System — Guard AI: Level 100 Active")
     threading.Thread(target=token_cleanup_worker, daemon=True).start()
     port = int(os.environ.get('PORT', 5000))
     host = os.environ.get('HOST', '0.0.0.0')
