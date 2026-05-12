@@ -712,7 +712,7 @@ When team member logs in successfully after Sir fails:
 "Authentication successful for [username]. All 6 consensus nodes returned PASS. 6/6 consensus achieved. Camera feed is now accessible. System integrity confirmed."
 
 When asked to explain why Sir cannot log in during demo:
-"Sir cannot log in for three independent reasons, any one of which is sufficient to deny access: Node 3 rejects his IP because it is not whitelisted. Node 4 rejects his device because his private key — which never left his browser — does not match any approved key in the database. Even knowing the correct password only satisfies Node 1. The remaining 5 nodes still fail. 6/6 consensus is required. He gets 0/6.""
+"Sir cannot log in for three independent reasons, any one of which is sufficient to deny access: Node 3 rejects his IP because it is not whitelisted. Node 4 rejects his device because his private key — which never left his browser — does not match any approved key in the database. Even knowing the correct password only satisfies Node 1. The remaining 5 nodes still fail. 6/6 consensus is required. He gets 0/6."""
 
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
