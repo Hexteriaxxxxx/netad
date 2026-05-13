@@ -225,6 +225,7 @@ function showSection(name){
   ['device-register-section','device-status-section','login-section'].forEach(id=>{document.getElementById(id).style.display='none';});
   const map={register:'device-register-section',status:'device-status-section',login:'login-section'};
   document.getElementById(map[name]).style.display='block';
+  if(name==='login'&&!_loginTimestamp) startLoginTimer();
 }
 
 function showStatusMsg(status,username){
@@ -541,15 +542,6 @@ async function doLogin(){
 
 // ── INIT ──
 initDevice();
-
-// Hook into showSection to start timer when login form appears
-const _origShowSection = showSection;
-function showSection(name) {
-  _origShowSection(name);
-  if (name === 'login' && !_loginTimestamp) {
-    startLoginTimer();
-  }
-}
 </script>
 </body>
 </html>
