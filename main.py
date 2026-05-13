@@ -126,9 +126,15 @@ def node1_password(payload):
 
 def node2_timestamp(payload):
     import time as t
-    age = t.time() - payload.get('timestamp', 0)
+    # Check frontend-generated login_timestamp (set when login form appeared)
+    # This enforces the 30-second login window from the moment the form was shown
+    login_ts = payload.get('login_timestamp', 0)
+    if not login_ts:
+        # Fallback to block timestamp for backward compat
+        login_ts = payload.get('timestamp', 0)
+    age = t.time() - login_ts
     ok = 0 <= age <= 30
-    print(f"Node 2 {'PASS' if ok else 'FAIL'}: {age:.1f}s")
+    print(f"Node 2 {'PASS' if ok else 'FAIL'}: login_timestamp age={age:.1f}s (limit=30s)")
     return 'PASS' if ok else 'FAIL'
 
 def node3_ip_whitelist(payload):
@@ -317,6 +323,7 @@ def login():
         'username': username, 'password': password, 'ip': client_ip,
         'timestamp': block.timestamp, 'hash': block.hash, 'signature': signature,
         'session_token': session_token,
+        'login_timestamp': data.get('login_timestamp', 0),
         'device_id': data.get('device_id', ''),
         'device_signature': data.get('device_signature', ''),
         'device_message': data.get('device_message', ''),

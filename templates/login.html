@@ -400,6 +400,36 @@ function setPipeStep(i,state){
   else if(state==='SKIP'){dot.className='pipe-dot';res.className='pipe-result pipe-skip';res.textContent='SKIP';}
 }
 
+// ── LOGIN WINDOW TIMER (30 seconds from page load) ──
+// Timestamp is generated when the login form becomes visible.
+// Sent to server and checked by Node 2 — if > 30s old, FAIL.
+let _loginTimestamp = null;
+const LOGIN_WINDOW_SECS = 30;
+
+function startLoginTimer() {
+  _loginTimestamp = Math.floor(Date.now() / 1000); // Unix seconds
+  let remaining = LOGIN_WINDOW_SECS;
+  const btn = document.getElementById('login-btn');
+  const interval = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(interval);
+      // Window expired — disable login and show warning
+      if (btn && !busy) {
+        btn.disabled = true;
+        btn.querySelector('.btn-text').textContent = 'SESSION EXPIRED — REFRESH';
+        btn.style.background = 'rgba(255,77,77,0.15)';
+        btn.style.color = 'var(--red)';
+        btn.style.boxShadow = 'none';
+        setStatus('// 30-second login window expired — refresh the page', 'var(--red)');
+      }
+    } else if (remaining <= 10 && btn && !busy) {
+      // Countdown warning in last 10 seconds
+      btn.querySelector('.btn-text').textContent = `AUTHENTICATE → (${remaining}s)`;
+    }
+  }, 1000);
+}
+
 // ── LOGIN ──
 let busy=false;
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&!busy)doLogin();});
@@ -439,7 +469,8 @@ async function doLogin(){
 
   try{
     const deviceSig=await signLoginRequest(u,session_token)||{};
-    const res=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p,csrf_token,session_token,...deviceSig})});
+    // Include frontend-generated timestamp — Node 2 validates this is within 30 seconds
+    const res=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p,csrf_token,session_token,login_timestamp:_loginTimestamp,...deviceSig})});
     const data=await res.json();
     clearInterval(stepTimer);
     if(data.steps){
@@ -465,6 +496,15 @@ async function doLogin(){
 
 // ── INIT ──
 initDevice();
+
+// Hook into showSection to start timer when login form appears
+const _origShowSection = showSection;
+function showSection(name) {
+  _origShowSection(name);
+  if (name === 'login' && !_loginTimestamp) {
+    startLoginTimer();
+  }
+}
 </script>
 </body>
 </html>
