@@ -180,8 +180,12 @@ def node5_session_token(payload):
 
 def node6_rate_limit(payload):
     ip, MAX = payload.get('ip', 'unknown'), 5
+    # BLACKLIST always wins — even whitelisted IPs can be blacklisted
     if is_blacklisted(ip): print(f"Node 6 FAIL: {ip} blacklisted"); return 'FAIL'
-    if is_whitelisted(ip): print(f"Node 6 PASS: {ip} whitelisted — skip rate limit"); return 'PASS'
+    # Whitelisted IPs skip rate limit counting but NOT blacklist check above
+    if is_whitelisted(ip):
+        print(f"Node 6 PASS: {ip} whitelisted — skip rate limit counter")
+        return 'PASS'
     count = get_all_failed_count(ip)
     if count >= MAX:
         add_to_blacklist(ip, 'temporary', 1800)
@@ -666,7 +670,15 @@ def api_sessions_kick():
 
 @app.route('/api/session/heartbeat', methods=['POST'])
 def api_session_heartbeat():
-    username = request.get_json().get('username', '')
+    data = request.get_json()
+    username  = data.get('username', '')
+    client_ip = request.remote_addr
+    # Check if IP is blacklisted — kick immediately if so
+    if is_blacklisted(client_ip):
+        session.clear(); set_consensus_state(False)
+        delete_session(username)
+        socketio.emit('session_kicked', {'username': username, 'reason': 'ip_blacklisted'})
+        return jsonify({'ok': False, 'kicked': True, 'reason': 'ip_blacklisted'})
     update_session_heartbeat(username)
     still_valid = any(s['username'] == username for s in get_sessions())
     if not still_valid:

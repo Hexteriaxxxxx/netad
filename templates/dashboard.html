@@ -876,7 +876,8 @@ setInterval(async()=>{
     const res=await fetch('/api/session/heartbeat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'{{ user }}'})});
     const data=await res.json();
     if(data.kicked){
-      showToast('Your session was terminated','error',3000);
+      const reason=data.reason==='ip_blacklisted'?'Your IP was blacklisted — session terminated.':'Your session was terminated.';
+      showToast(reason,'error',4000);
       setTimeout(()=>{window.location.href='/logout';},2000);
     }
   }catch(e){}
