@@ -239,6 +239,50 @@ function showStatusMsg(status,username){
   }
 }
 
+async function getDeviceLabel() {
+  const ua = navigator.userAgent;
+
+  // Browser detection
+  let browser = 'Unknown Browser';
+  try {
+    if (navigator.brave && await navigator.brave.isBrave()) browser = 'Brave';
+    else if (ua.includes('Edg/')) browser = 'Edge';
+    else if (ua.includes('Firefox/')) browser = 'Firefox';
+    else if (ua.includes('OPR/') || ua.includes('Opera')) browser = 'Opera';
+    else if (ua.includes('SamsungBrowser')) browser = 'Samsung Browser';
+    else if (ua.includes('Chrome/')) browser = 'Chrome';
+    else if (ua.includes('Safari/') && !ua.includes('Chrome')) browser = 'Safari';
+  } catch(e) {
+    if (ua.includes('Edg/')) browser = 'Edge';
+    else if (ua.includes('Firefox/')) browser = 'Firefox';
+    else if (ua.includes('Chrome/')) browser = 'Chrome';
+    else if (ua.includes('Safari/')) browser = 'Safari';
+  }
+
+  // OS detection
+  let os = 'Unknown OS';
+  if (ua.includes('Windows NT 10') || ua.includes('Windows NT 11')) os = 'Windows 10/11';
+  else if (ua.includes('Windows NT')) os = 'Windows';
+  else if (ua.includes('Mac OS X')) os = 'macOS';
+  else if (ua.includes('Android')) {
+    const m = ua.match(/Android ([\d.]+)/);
+    os = m ? `Android ${m[1]}` : 'Android';
+  }
+  else if (ua.includes('iPhone')) {
+    const m = ua.match(/OS ([\d_]+) like/);
+    os = m ? `iOS ${m[1].replace(/_/g,'.')}` : 'iPhone';
+  }
+  else if (ua.includes('iPad')) os = 'iPadOS';
+  else if (ua.includes('Linux')) os = 'Linux';
+
+  // Device type
+  let type = 'Desktop';
+  if (/Mobi|Android.*Mobile|iPhone/i.test(ua)) type = 'Phone';
+  else if (/Tablet|iPad|Android(?!.*Mobile)/i.test(ua)) type = 'Tablet';
+
+  return `${browser} · ${os} · ${type}`;
+}
+
 async function registerDevice(){
   const username=document.getElementById('reg-username').value.trim();
   if(!username){setRegStatus('// enter your username first','var(--red)');return;}
@@ -250,7 +294,8 @@ async function registerDevice(){
     await idbSet('device_keypair',kp);
     localStorage.setItem('netad_device_id',did);
     _deviceKeyPair=kp;_deviceId=did;_deviceUsername=username;
-    const res=await fetch('/api/register-device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,device_id:did,public_key:JSON.stringify(pubJwk),label:navigator.userAgent.substring(0,60)})});
+    const label = await getDeviceLabel();
+    const res=await fetch('/api/register-device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,device_id:did,public_key:JSON.stringify(pubJwk),label})});
     const data=await res.json();
     if(data.error){setRegStatus('// '+data.error,'var(--red)');}
     else if(data.status==='approved'){showSection('login');}
