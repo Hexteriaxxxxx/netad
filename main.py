@@ -1001,6 +1001,45 @@ def api_add_user():
         return jsonify({'success': True})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
+# ── EMERGENCY BREAK-GLASS ACCESS ──
+# Hidden route — bypasses ALL 6 nodes.
+# Only works with EMERGENCY_PASSWORD env var set in Railway.
+# Use ONLY if entire team is locked out.
+_emergency_used_at = 0
+_emergency_cooldown = 300  # 5 minutes between uses
+
+@app.route('/api/emergency-access', methods=['POST'])
+def emergency_access():
+    global _emergency_used_at
+    emergency_pw = os.environ.get('EMERGENCY_PASSWORD', '')
+    if not emergency_pw:
+        return jsonify({'error': 'not configured'}), 404
+    data = request.get_json()
+    if data.get('password') != emergency_pw:
+        add_log('EMERGENCY', request.remote_addr, 'DENIED', 'Wrong emergency password')
+        return jsonify({'error': 'unauthorized'}), 401
+    # Cooldown check — prevent abuse
+    now = time.time()
+    if now - _emergency_used_at < _emergency_cooldown:
+        remaining = int(_emergency_cooldown - (now - _emergency_used_at))
+        return jsonify({'error': f'cooldown active — wait {remaining}s'}), 429
+    _emergency_used_at = now
+    # Bypass all nodes — create admin session directly
+    sess_token = secrets.token_hex(32)
+    delete_session('admin')
+    create_session('admin', request.remote_addr, 'Emergency Admin', sess_token)
+    session['user'] = 'admin'
+    session['token'] = sess_token
+    set_consensus_state(True)
+    # Wipe blacklist and re-whitelist this IP
+    client_ip = request.remote_addr
+    add_to_whitelist(client_ip, 'Emergency re-entry')
+    # Notify all connected clients
+    socketio.emit('chat_message', {'role': 'system', 'message': f'🚨 EMERGENCY ACCESS USED from {mask_ip(client_ip)} at {time.strftime("%Y-%m-%d %H:%M:%S")}'})
+    add_log('admin', client_ip, 'EMERGENCY', 'Break-glass access used')
+    print(f"[EMERGENCY] Access granted to {client_ip}")
+    return jsonify({'granted': True, 'message': 'Emergency access granted. You are now logged in as admin.'})
+
 # ── MAIN ──
 if __name__ == '__main__':
     print("Starting NETAD Security System — Guard AI: Level 100 Active")
