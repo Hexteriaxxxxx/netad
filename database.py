@@ -256,10 +256,10 @@ def clear_rate_limit(ip):
     return True
 
 # ── CHAT LOGS ──
-def add_chat_log(role, message):
+def add_chat_log(role, message, sender=''):
     with get_db() as conn:
         cur = get_cursor(conn)
-        cur.execute("INSERT INTO chat_logs (role, message) VALUES (%s, %s)", (role, message))
+        cur.execute("INSERT INTO chat_logs (role, message, sender) VALUES (%s, %s, %s)", (role, message, sender))
 
 def get_chat_logs(limit=50):
     with get_db() as conn:

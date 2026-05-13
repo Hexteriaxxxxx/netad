@@ -819,16 +819,9 @@ def api_chat():
     groq_api_key = os.environ.get('GROQ_API_KEY')
     if not groq_api_key: return jsonify({'reply': 'Groq API key not configured.'})
 
-    sender = session.get('user', 'unknown')
-    add_chat_log('user', user_message)
-
-    # ── Broadcast user message to all clients (Group Chat) ──
-    socketio.emit('chat_message', {
-        'role': 'user',
-        'message': user_message,
-        'sender': sender
-    })
-
+    current_user = session.get('user', 'unknown')
+    add_chat_log('user', user_message, sender=current_user)  # sender stored so history shows correct username
+    socketio.emit('chat_message', {'role':'user','message':user_message,'sender':current_user})
     chat_history = get_chat_logs(20)
     system_prompt = GUARD_SYSTEM_PROMPT + "\n\n" + _get_system_context()
     messages = [{'role': 'system', 'content': system_prompt}]

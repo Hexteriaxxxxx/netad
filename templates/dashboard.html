@@ -835,9 +835,14 @@ async function loadChatHistory(){
     const c=document.getElementById('chat-messages');
     if(c.children.length>1)return;
     data.forEach(m=>{
-      if(m.role==='user')appendChatMsg('user',m.message,fmtTs(m.timestamp));
-      else if(m.role==='assistant')appendChatMsg('assistant',m.message,fmtTs(m.timestamp));
-      else if(m.role==='system')appendChatMsg('system-alert',m.message,fmtTs(m.timestamp));
+      if(m.role==='user'){
+        const sender=m.sender||'';
+        const isMe=!sender||sender==='{{ user }}';
+        if(isMe) appendChatMsg('user',m.message,fmtTs(m.timestamp));
+        else appendChatMsg('other-user',m.message,fmtTs(m.timestamp),sender);
+      }
+      else if(m.role==='assistant') appendChatMsg('assistant',m.message,fmtTs(m.timestamp));
+      else if(m.role==='system') appendChatMsg('system-alert',m.message,fmtTs(m.timestamp));
     });
   }catch(e){}
 }
