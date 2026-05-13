@@ -79,7 +79,7 @@ def is_consensus_granted():
     with _consensus_lock: return _consensus_granted
 
 def generate_camera_stream(cam_id):
-    url = CAMERA_URLS.get(cam_id, '')
+    url = get_camera_url(cam_id)
     if not url: yield b''; return
     try:
         import cv2
@@ -95,17 +95,59 @@ def generate_camera_stream(cam_id):
             time.sleep(0.033)
     except Exception as e: print(f"Camera {cam_id} error: {e}")
 
+# ── DYNAMIC CAMERA CONFIG ──
+_dynamic_cameras: dict = {}
+
+def get_camera_url(cam_id: int) -> str:
+    return _dynamic_cameras.get(cam_id) or CAMERA_URLS.get(cam_id, '')
+
+def _mask_cam_url(url: str) -> str:
+    import re
+    return re.sub(r'://([^:@/]+):([^@/]+)@', r'://***:***@', url) if url else ''
+
 @app.route('/api/camera/<int:cam_id>/stream')
 def camera_stream(cam_id):
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    if not CAMERA_URLS.get(cam_id): return jsonify({'error': 'not configured'}), 503
+    url = get_camera_url(cam_id)
+    if not url: return jsonify({'error': 'not configured'}), 503
     if not is_consensus_granted(): return jsonify({'error': 'consensus not met'}), 403
     return Response(generate_camera_stream(cam_id), mimetype='multipart/x-mixed-replace; boundary=frame')
 
+@app.route('/api/camera/connect', methods=['POST'])
+def api_camera_connect():
+    """Connect a camera URL at runtime via Guard AI or dashboard. Admin only."""
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    data    = request.get_json()
+    cam_id  = int(data.get('cam_id', 1))
+    raw_url = data.get('url', '').strip()
+    if not raw_url: return jsonify({'error': 'missing url'}), 400
+    import re
+    if not re.match(r'^(rtsp|rtsps|http|https)://', raw_url, re.IGNORECASE):
+        return jsonify({'error': 'invalid URL — must start with rtsp:// or http://'}), 400
+    if cam_id not in [1, 2]: return jsonify({'error': 'cam_id must be 1 or 2'}), 400
+    _dynamic_cameras[cam_id] = raw_url
+    masked = _mask_cam_url(raw_url)
+    log_admin('camera_connect', f'cam{cam_id} → {masked}')
+    socketio.emit('camera_connected', {'cam_id': cam_id, 'masked_url': masked})
+    showToast_server = {'cam_id': cam_id, 'masked_url': masked}
+    return jsonify({'success': True, 'cam_id': cam_id, 'masked_url': masked})
+
+@app.route('/api/camera/disconnect', methods=['POST'])
+def api_camera_disconnect():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    cam_id = int(request.get_json().get('cam_id', 1))
+    _dynamic_cameras.pop(cam_id, None)
+    socketio.emit('camera_access', {'accessible': False, 'reason': f'cam{cam_id} disconnected'})
+    return jsonify({'success': True})
+
 @app.route('/api/camera/status')
 def camera_status():
-    g = is_consensus_granted()
-    return jsonify({'accessible': g, 'cameras': {str(i): {'configured': bool(u), 'accessible': g and bool(u)} for i, u in CAMERA_URLS.items()}})
+    granted = is_consensus_granted()
+    cams = {}
+    for i in [1, 2]:
+        url = get_camera_url(i)
+        cams[str(i)] = {'configured': bool(url), 'accessible': granted and bool(url), 'masked_url': _mask_cam_url(url)}
+    return jsonify({'accessible': granted, 'cameras': cams})
 
 # ══════════════════════════════════════════════════
 # INLINE NODES

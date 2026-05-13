@@ -467,6 +467,10 @@ socket.on('chat_message',d=>{
   else if(d.role==='system') appendChatMsg('system-alert',d.message);
 });
 socket.on('camera_access',d=>{setCameraState(d.accessible);});
+socket.on('camera_connected',d=>{
+  showToast(`📷 Camera ${d.cam_id} connected: ${d.masked_url}`,'success',5000);
+  checkCameraStatus();
+});
 socket.on('device_pending',d=>{
   loadDevices();loadMetrics();
   showToast(`New device from ${d.username} — needs approval`,'warning',6000);
