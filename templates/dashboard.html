@@ -439,6 +439,13 @@ updateClock();setInterval(updateClock,1000);
 const socket=io();
 socket.on('login_attempt',d=>{loadLogs();loadMetrics();showToast(`Login: ${d.username} from ${d.ip} — ${d.result}`,d.result==='GRANTED'?'success':d.result==='SUSPICIOUS'?'warning':'error');});
 socket.on('ai_alert',d=>{loadAiLogs();showToast(`🚨 AI Alert: ${d.message}`,'warning',5000);});
+socket.on('new_ai_log',d=>{
+  // Real-time push to AI log tab — no need to refresh
+  loadAiLogs();
+  const sev=d.severity||'MEDIUM';
+  const color=sev==='CRITICAL'?'error':sev==='HIGH'?'warning':'info';
+  showToast(`🔍 [${sev}] ${d.type||'THREAT'}: ${(d.description||'').substring(0,60)}...`,color,6000);
+});
 socket.on('node_status',d=>{updateNodeStatus(d.nodes);});
 socket.on('session_kicked',d=>{
   loadSessions();
@@ -730,7 +737,21 @@ async function loadAiLogs(){
     if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No AI anomaly events yet</div>';return;}
     data.forEach(l=>{
       const div=document.createElement('div');div.className='ai-row';
-      div.innerHTML=`<div><div class="ai-desc">${l.description||'Anomaly detected'}</div><div class="ai-sub">${l.ip||'—'} · ${l.username||'—'} · score: ${parseFloat(l.score||0).toFixed(3)} · ${fmtTs(l.timestamp)}</div></div><span class="${l.flagged?'tag-flagged':'tag-normal'}">${l.flagged?'FLAGGED':'NORMAL'}</span>`;
+      // Determine severity tag from description
+      const desc=l.description||'Anomaly detected';
+      const sevMatch=desc.match(/CRITICAL|HIGH|MEDIUM|LOW/);
+      const sev=sevMatch?sevMatch[0]:'FLAGGED';
+      const sevColor=sev==='CRITICAL'?'var(--red)':sev==='HIGH'?'var(--amber)':sev==='MEDIUM'?'var(--blue)':'var(--accent)';
+      const sevBg=sev==='CRITICAL'?'rgba(255,77,77,0.11)':sev==='HIGH'?'rgba(255,179,68,0.11)':sev==='MEDIUM'?'rgba(0,180,216,0.11)':'rgba(0,229,160,0.11)';
+      // Extract type from description if available
+      const typeMatch=desc.match(/^([A-Z_]+)\s/);
+      const typeLabel=l.flagged?(sev==='CRITICAL'?'🚨 CRITICAL':sev==='HIGH'?'⚠️ HIGH':sev==='MEDIUM'?'📌 MEDIUM':'NORMAL'):'NORMAL';
+      div.innerHTML=`
+        <div style="flex:1;">
+          <div class="ai-desc">${desc}</div>
+          <div class="ai-sub">${l.ip||'—'} · ${l.username||'—'} · score: ${parseFloat(l.score||0).toFixed(3)} · ${fmtTs(l.timestamp)}</div>
+        </div>
+        <span style="background:${sevBg};color:${sevColor};font-size:9px;padding:2px 8px;border-radius:4px;font-weight:700;font-family:var(--mono);white-space:nowrap;">${typeLabel}</span>`;
       c.appendChild(div);
     });
     document.getElementById('m-ai').textContent=data.filter(a=>a.flagged).length;

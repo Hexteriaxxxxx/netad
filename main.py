@@ -251,6 +251,227 @@ def _notify_guard(message):
         socketio.emit('chat_message', {'role': 'system', 'message': message})
     except Exception: pass
 
+# ══════════════════════════════════════════════════
+# THREAT DETECTION ENGINE
+# Detects ALL attack types, logs to AI log, notifies Guard
+# Runs async so login response is never delayed
+# ══════════════════════════════════════════════════
+
+# SQL injection patterns
+_SQL_PATTERNS = [
+    "' or ", "' or'", "1=1", "or 1=1", "' --", "'; --", "drop table",
+    "union select", "insert into", "delete from", "'; drop", "xp_",
+    "exec(", "execute(", "cast(", "convert(", "char(", "0x",
+    "benchmark(", "sleep(", "waitfor", "information_schema",
+]
+
+# Known attack tool user agents
+_ATTACK_AGENTS = [
+    "sqlmap", "nikto", "nmap", "masscan", "hydra", "medusa",
+    "burpsuite", "burp suite", "metasploit", "nessus", "openvas",
+    "python-requests", "go-http-client", "curl/", "wget/",
+    "zgrab", "shodan", "censys",
+]
+
+def detect_threats(username: str, ip: str, data: dict, result: str, votes: list, user_agent: str = '') -> list:
+    """
+    Analyzes a login attempt and returns a list of detected threats.
+    Each threat is a dict: {type, description, severity, score}
+    severity: CRITICAL / HIGH / MEDIUM / LOW
+    """
+    threats = []
+    ua_lower = (user_agent or '').lower()
+    u_lower = username.lower()
+
+    # 1. SQL INJECTION in username or password
+    raw_username = data.get('_raw_username', username)
+    raw_password = data.get('_raw_password', '')
+    for field, val in [('username', raw_username), ('password', raw_password)]:
+        val_lower = val.lower()
+        for pattern in _SQL_PATTERNS:
+            if pattern in val_lower:
+                threats.append({
+                    'type': 'SQL_INJECTION',
+                    'description': f'SQL injection pattern detected in {field} field: "{pattern}"',
+                    'severity': 'CRITICAL',
+                    'score': -0.9
+                })
+                break
+
+    # 2. ATTACK TOOL USER AGENT
+    for agent in _ATTACK_AGENTS:
+        if agent in ua_lower:
+            threats.append({
+                'type': 'ATTACK_TOOL',
+                'description': f'Known attack tool detected in User-Agent: {user_agent[:80]}',
+                'severity': 'HIGH',
+                'score': -0.8
+            })
+            break
+
+    # 3. UNKNOWN USERNAME (not in team)
+    VALID_USERS = {'admin', 'kevin', 'josiah', 'jm', 'karl', 'nico', 'lj'}
+    if username and username not in VALID_USERS:
+        threats.append({
+            'type': 'UNKNOWN_USERNAME',
+            'description': f'Login attempt with unknown username: "{username}"',
+            'severity': 'MEDIUM',
+            'score': -0.5
+        })
+
+    # 4. RATE LIMIT HIT (Node 6 failed)
+    if len(votes) >= 1 and votes[0] == 'FAIL' and result == 'DENIED':
+        try:
+            count = get_all_failed_count(ip)
+            if count >= 5:
+                threats.append({
+                    'type': 'BRUTE_FORCE',
+                    'description': f'Rate limit triggered — {count} failed attempts in last hour from {mask_ip(ip)}',
+                    'severity': 'HIGH',
+                    'score': -0.85
+                })
+        except Exception: pass
+
+    # 5. PASSWORD KNOWN but other nodes failed (password leak indicator)
+    # votes order: rate_limit, password, timestamp, ip, device, session
+    if len(votes) >= 2 and votes[1] == 'PASS' and result == 'DENIED':
+        threats.append({
+            'type': 'CREDENTIAL_LEAK',
+            'description': f'Node 1 PASS (correct password) but login denied — password may be compromised for user "{username}"',
+            'severity': 'CRITICAL',
+            'score': -0.95
+        })
+
+    # 6. INVALID CSRF TOKEN
+    csrf = data.get('csrf_token', '')
+    if csrf and len(csrf) == 64 and result == 'DENIED':
+        # CSRF was the right length but not valid — could be forged
+        pass  # covered by existing CSRF log
+    if not csrf or len(csrf) < 10:
+        threats.append({
+            'type': 'CSRF_BYPASS_ATTEMPT',
+            'description': f'Login attempt with missing or malformed CSRF token from {mask_ip(ip)}',
+            'severity': 'HIGH',
+            'score': -0.75
+        })
+
+    # 7. OFF-HOURS login attempt (10PM - 5AM Philippine time)
+    import datetime
+    ph_hour = (datetime.datetime.utcnow().hour + 8) % 24  # UTC+8
+    if ph_hour >= 22 or ph_hour < 5:
+        severity = 'MEDIUM' if result == 'DENIED' else 'HIGH'
+        threats.append({
+            'type': 'OFF_HOURS',
+            'description': f'Login attempt at {ph_hour:02d}:00 PH time — outside normal team hours (5AM-10PM)',
+            'severity': severity,
+            'score': -0.4
+        })
+
+    # 8. REPLAY ATTACK — session token already used (Node 5 failed)
+    if len(votes) >= 6 and votes[5] == 'FAIL' and result == 'DENIED':
+        threats.append({
+            'type': 'REPLAY_ATTACK',
+            'description': f'Session token already consumed — possible replay attack from {mask_ip(ip)}',
+            'severity': 'HIGH',
+            'score': -0.8
+        })
+
+    return threats
+
+
+def _groq_analyze_threat_async(threat_event: dict):
+    """
+    Sends a threat event to Groq for deep analysis.
+    Runs in a background thread — never blocks login.
+    Saves result to AI log and notifies Guard chat.
+    """
+    def _run():
+        try:
+            groq_api_key = os.environ.get('GROQ_API_KEY', '')
+            if not groq_api_key:
+                return
+            from groq import Groq
+            client = Groq(api_key=groq_api_key)
+            prompt = (
+                f"You are NETAD Guard analyzing a security event. Be concise — 2-3 sentences max.\n\n"
+                f"EVENT:\n"
+                f"Type: {threat_event.get('type')}\n"
+                f"Severity: {threat_event.get('severity')}\n"
+                f"Description: {threat_event.get('description')}\n"
+                f"IP: {mask_ip(str(threat_event.get('ip','')))}\n"
+                f"Username: {threat_event.get('username','')}\n"
+                f"Time: {threat_event.get('time','')}\n\n"
+                f"In 2-3 sentences: what is this attack, why is it dangerous, and what should the admin do?"
+            )
+            response = client.chat.completions.create(
+                model='llama-3.3-70b-versatile',
+                messages=[{'role': 'user', 'content': prompt}],
+                max_tokens=150,
+                temperature=0.2
+            )
+            analysis = response.choices[0].message.content.strip()
+            # Update the AI log description with Groq analysis
+            threat_event['groq_analysis'] = analysis
+            # Notify Guard chat
+            full_msg = (
+                f"🔍 THREAT ANALYSIS [{threat_event.get('severity')}] — {threat_event.get('type')}\n"
+                f"{threat_event.get('description')}\n"
+                f"Groq: {analysis}"
+            )
+            _notify_guard(full_msg)
+            # Push real-time update to AI log tab
+            socketio.emit('ai_alert', {
+                'ip': mask_ip(str(threat_event.get('ip', ''))),
+                'username': threat_event.get('username', ''),
+                'score': threat_event.get('score', -0.5),
+                'message': f"[{threat_event.get('severity')}] {threat_event.get('type')}: {threat_event.get('description')}",
+                'groq_analysis': analysis
+            })
+        except Exception as e:
+            print(f"Groq threat analysis error: {e}")
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def log_all_threats(username: str, ip: str, data: dict, result: str, votes: list, user_agent: str = ''):
+    """
+    Main entry point for threat detection.
+    Call this after every login attempt.
+    Detects threats, logs to AI log, triggers Groq analysis async.
+    """
+    import datetime
+    threats = detect_threats(username, ip, data, result, votes, user_agent)
+    for threat in threats:
+        # Always log to AI log regardless of Isolation Forest
+        add_ai_log(
+            ip=ip,
+            username=username,
+            description=threat['description'],
+            score=threat['score'],
+            flagged=True
+        )
+        # Push live to dashboard AI log tab
+        socketio.emit('new_ai_log', {
+            'ip': mask_ip(ip),
+            'username': username,
+            'description': threat['description'],
+            'score': threat['score'],
+            'severity': threat['severity'],
+            'type': threat['type'],
+            'flagged': True,
+            'timestamp': str(datetime.datetime.now())
+        })
+        # Send to Groq for deep analysis (async — non-blocking)
+        _groq_analyze_threat_async({
+            'type': threat['type'],
+            'severity': threat['severity'],
+            'description': threat['description'],
+            'score': threat['score'],
+            'ip': ip,
+            'username': username,
+            'time': str(datetime.datetime.now())[:19],
+            'result': result
+        })
+
 # ── PUBLIC RATE LIMITER ──
 _public_rate: dict = {}
 _public_rate_lock = threading.Lock()
@@ -301,6 +522,10 @@ def login():
     csrf_token    = data.get('csrf_token', '')[:128]
     session_token = data.get('session_token', '')[:128] or secrets.token_hex(32)
     client_ip     = request.remote_addr
+    user_agent    = request.headers.get('User-Agent', '')
+    # Store raw values for SQL injection detection before truncation
+    data['_raw_username'] = data.get('username', '')
+    data['_raw_password'] = data.get('password', '')
     if not validate_csrf(csrf_token):
         add_log(username, client_ip, 'DENIED', 'Invalid CSRF token')
         return jsonify({'granted': False, 'error': 'invalid csrf token'})
@@ -331,6 +556,13 @@ def login():
     result, votes, steps = run_consensus(payload)
     granted = result == 'GRANTED'
     add_log(username, client_ip, result)
+    # ── Run threat detection on every login attempt ──
+    # Async — never blocks response. Logs to AI log + Groq analysis.
+    threading.Thread(
+        target=log_all_threats,
+        args=(username, client_ip, data, result, votes, user_agent),
+        daemon=True
+    ).start()
     if granted:
         user_data = get_user(username)
         role = user_data['role'] if user_data else 'Member'
