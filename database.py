@@ -124,24 +124,37 @@ def get_logs(limit=50):
         return cur.fetchall()
 
 def get_logs_today(limit=50):
-    """Get logs from today only — resets at midnight. Used for 'Attempts Today' metric."""
+    """Get logs from today only — resets at midnight."""
     with get_db() as conn:
         cur = get_cursor(conn)
         cur.execute(
-            "SELECT * FROM logs WHERE timestamp >= CURRENT_DATE ORDER BY timestamp DESC LIMIT %s",
+            """
+            SELECT * FROM logs
+            WHERE timestamp >= CURRENT_DATE
+            ORDER BY timestamp DESC LIMIT %s
+            """,
             (limit,)
         )
         return cur.fetchall()
 
 # ── SESSIONS ──
 def create_session(username, ip, role, token):
+    """
+    Create a session for a user.
+    ENFORCES ONE SESSION PER USERNAME:
+    - Deletes ALL existing sessions for this username first
+    - Then inserts the new session
+    - Broadcasts kick to old session via socketio (handled in main.py before calling this)
+    """
     with get_db() as conn:
         cur = get_cursor(conn)
+        # Hard delete ALL rows for this username — no duplicates possible
+        cur.execute("DELETE FROM sessions WHERE username = %s", (username,))
+        # Insert fresh session
         cur.execute(
             """
             INSERT INTO sessions (username, ip, role, token, last_seen)
             VALUES (%s, %s, %s, %s, NOW())
-            ON CONFLICT (token) DO UPDATE SET last_seen = NOW()
             """,
             (username, ip, role, token)
         )
@@ -162,9 +175,16 @@ def get_sessions():
         return cur.fetchall()
 
 def delete_session(username):
+    """Delete ALL sessions for a username — ensures complete cleanup."""
     with get_db() as conn:
         cur = get_cursor(conn)
         cur.execute("DELETE FROM sessions WHERE username = %s", (username,))
+
+def delete_all_sessions():
+    """Emergency — wipe ALL active sessions."""
+    with get_db() as conn:
+        cur = get_cursor(conn)
+        cur.execute("DELETE FROM sessions")
 
 # ── SESSION TOKENS ──
 def claim_token(token: str) -> bool:
@@ -229,7 +249,6 @@ def get_all_failed_count(ip):
         return result['count'] if result else 0
 
 def clear_rate_limit(ip):
-    """Clear failed logs and blacklist for an IP — resets rate limit counter."""
     with get_db() as conn:
         cur = get_cursor(conn)
         cur.execute("DELETE FROM logs WHERE ip = %s AND result IN ('DENIED', 'SUSPICIOUS')", (ip,))
@@ -257,7 +276,9 @@ def register_device(username, device_id, public_key_jwk, label='Unknown Device',
             INSERT INTO device_keys (username, device_id, public_key, label, status, registered_ip)
             VALUES (%s, %s, %s, %s, 'pending', %s)
             ON CONFLICT (device_id) DO UPDATE
-            SET public_key = EXCLUDED.public_key, username = EXCLUDED.username, registered_ip = EXCLUDED.registered_ip
+            SET public_key = EXCLUDED.public_key,
+                username = EXCLUDED.username,
+                registered_ip = EXCLUDED.registered_ip
         """, (username, device_id, public_key_jwk, label, registered_ip))
 
 def get_device(device_id):

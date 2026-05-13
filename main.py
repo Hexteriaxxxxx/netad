@@ -328,7 +328,10 @@ def login():
         user_data = get_user(username)
         role = user_data['role'] if user_data else 'Member'
         sess_token = secrets.token_hex(32)
-        delete_session(username)
+        # Kick old session first — broadcasts to old browser tab so it redirects to login
+        socketio.emit('session_kicked', {'username': username, 'reason': 'new_login'})
+        # create_session now does DELETE all old sessions + INSERT new atomically
+        # Guarantees exactly ONE active session per username at all times
         create_session(username, client_ip, role, sess_token)
         session['user'] = username
         session['token'] = sess_token
