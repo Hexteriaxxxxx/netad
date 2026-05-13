@@ -77,11 +77,14 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
 .cam-inner{text-align:center;position:relative;z-index:1;}
 .cam-dot{width:9px;height:9px;border-radius:50%;background:var(--accent);margin:0 auto 6px;box-shadow:0 0 10px var(--accent);animation:tbpulse 1.5s infinite;}
 .cam-label{font-size:9px;font-family:var(--mono);color:var(--accent);letter-spacing:1.5px;}
-.cam-img{width:100%;height:180px;object-fit:cover;display:block;}
+.cam-img{width:100%;height:180px;object-fit:cover;display:block;cursor:pointer;transition:height 0.3s ease;}
+.cam-img.expanded{height:340px;}
+.cam-fullscreen-btn{position:absolute;top:8px;right:8px;background:rgba(4,12,20,0.75);border:1px solid rgba(0,229,160,0.3);color:var(--accent);font-family:var(--mono);font-size:9px;padding:3px 8px;border-radius:4px;cursor:pointer;letter-spacing:1px;backdrop-filter:blur(4px);z-index:5;transition:background 0.2s;}
+.cam-fullscreen-btn:hover{background:rgba(0,229,160,0.15);}
 .cam-live-badge{position:absolute;top:8px;left:8px;background:rgba(255,77,77,0.85);color:#fff;font-family:var(--mono);font-size:8px;font-weight:700;padding:2px 7px;border-radius:4px;letter-spacing:1px;display:flex;align-items:center;gap:4px;}
 .cam-live-dot{width:5px;height:5px;border-radius:50%;background:#fff;animation:tbpulse 1s infinite;}
-.log-header{display:grid;grid-template-columns:90px 1fr 1fr 85px;gap:8px;font-size:9px;font-family:var(--mono);color:var(--text3);letter-spacing:1.5px;padding-bottom:8px;border-bottom:1px solid var(--border);text-transform:uppercase;}
-.log-row{display:grid;grid-template-columns:90px 1fr 1fr 85px;gap:8px;font-size:11px;font-family:var(--mono);padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.03);align-items:center;transition:background 0.15s;}
+.log-header{display:grid;grid-template-columns:150px 1fr 1fr 85px;gap:8px;font-size:9px;font-family:var(--mono);color:var(--text3);letter-spacing:1.5px;padding-bottom:8px;border-bottom:1px solid var(--border);text-transform:uppercase;}
+.log-row{display:grid;grid-template-columns:150px 1fr 1fr 85px;gap:8px;font-size:11px;font-family:var(--mono);padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.03);align-items:center;transition:background 0.15s;}
 .log-row:hover{background:rgba(0,229,160,0.025);}
 .log-row:last-child{border-bottom:none;}
 .log-time{color:var(--text3);font-size:9px;}.log-ip{color:var(--text2);}.log-user{color:var(--text2);}
@@ -287,8 +290,9 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
             </div>
           </div>
           <div style="display:none;" id="cam1-live">
+            <button class="cam-fullscreen-btn" onclick="toggleCam(1)">⛶ EXPAND</button>
             <div class="cam-live-badge"><div class="cam-live-dot"></div>LIVE</div>
-            <img class="cam-img" id="cam1-img" src="" alt="Camera 1"/>
+            <img class="cam-img" id="cam1-img" src="" alt="Camera 1" onclick="toggleCam(1)" title="Click to expand"/>
           </div>
         </div>
         <!-- Camera 2 -->
@@ -300,8 +304,9 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
             </div>
           </div>
           <div style="display:none;" id="cam2-live">
+            <button class="cam-fullscreen-btn" onclick="toggleCam(2)">⛶ EXPAND</button>
             <div class="cam-live-badge"><div class="cam-live-dot"></div>LIVE</div>
-            <img class="cam-img" id="cam2-img" src="" alt="Camera 2"/>
+            <img class="cam-img" id="cam2-img" src="" alt="Camera 2" onclick="toggleCam(2)" title="Click to expand"/>
           </div>
         </div>
         <div style="font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:8px;text-align:center;">Unlocks when all 6/6 nodes agree + approved device</div>
@@ -369,7 +374,7 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
   <div id="tab-sessions" class="tab-section">
     <div class="panel">
       <div class="panel-title">Active Sessions <span class="panel-badge" id="sess-badge">—</span></div>
-      <div class="tbl-header" style="grid-template-columns:1fr 1fr 80px 120px 110px;"><span>USER</span><span>IP</span><span>ROLE</span><span>LAST SEEN</span><span>STATUS</span></div>
+      <div class="tbl-header" style="grid-template-columns:1fr 1fr 80px 160px 110px;"><span>USER</span><span>IP</span><span>ROLE</span><span>LAST SEEN</span><span>STATUS</span></div>
       <div id="sess-rows"><div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">Loading...</div></div>
     </div>
   </div>
@@ -512,6 +517,14 @@ function switchTab(name,el){
   if(name==='users')loadUsers();
 }
 
+// ── CAMERA EXPAND/COLLAPSE ──
+function toggleCam(id){
+  const img=document.getElementById(`cam${id}-img`);
+  const btn=document.querySelector(`#cam${id}-live .cam-fullscreen-btn`);
+  const expanded=img.classList.toggle('expanded');
+  if(btn)btn.textContent=expanded?'⛶ COLLAPSE':'⛶ EXPAND';
+}
+
 // ── CAMERA ──
 let _cameraOpen=false;
 function setCameraState(open){
@@ -592,7 +605,7 @@ async function loadMetrics(){
 loadMetrics();
 
 // ── LOGS ──
-function fmtTs(ts){if(!ts)return'—';try{const d=new Date(ts.includes('T')||ts.endsWith('Z')?ts:ts.replace(' ','T')+'Z');return d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true});}catch{return ts.substring(11,19)||'—';}}
+function fmtTs(ts){if(!ts)return'—';try{const d=new Date(ts.includes('T')||ts.endsWith('Z')?ts:ts.replace(' ','T')+'Z');return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true});}catch{return ts.substring(0,19)||'—';}}
 function fmtDate(ts){if(!ts)return'—';try{const d=new Date(ts.includes('T')||ts.endsWith('Z')?ts:ts.replace(' ','T')+'Z');return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});}catch{return'—';}}
 async function loadLogs(){
   try{
