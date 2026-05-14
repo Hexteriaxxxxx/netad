@@ -83,6 +83,14 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
 .cam-fullscreen-btn:hover{background:rgba(0,229,160,0.15);}
 .cam-live-badge{position:absolute;top:8px;left:8px;background:rgba(255,77,77,0.85);color:#fff;font-family:var(--mono);font-size:8px;font-weight:700;padding:2px 7px;border-radius:4px;letter-spacing:1px;display:flex;align-items:center;gap:4px;}
 .cam-live-dot{width:5px;height:5px;border-radius:50%;background:#fff;animation:tbpulse 1s infinite;}
+/* Camera connect row */
+.cam-connect-row{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;}
+.cam-connect-input{flex:1;min-width:180px;padding:6px 10px;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:11px;outline:none;}
+.cam-connect-input:focus{border-color:var(--accent);}
+.cam-connect-btn{padding:6px 12px;background:rgba(0,229,160,0.1);border:1px solid rgba(0,229,160,0.3);border-radius:6px;color:var(--accent);font-family:var(--mono);font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap;}
+.cam-connect-btn:hover{background:rgba(0,229,160,0.18);}
+.cam-disconnect-btn{padding:6px 12px;background:rgba(255,77,77,0.08);border:1px solid rgba(255,77,77,0.25);border-radius:6px;color:var(--red);font-family:var(--mono);font-size:10px;font-weight:700;cursor:pointer;white-space:nowrap;}
+.cam-url-hint{font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:5px;}
 .log-header{display:grid;grid-template-columns:150px 1fr 1fr 85px;gap:8px;font-size:9px;font-family:var(--mono);color:var(--text3);letter-spacing:1.5px;padding-bottom:8px;border-bottom:1px solid var(--border);text-transform:uppercase;}
 .log-row{display:grid;grid-template-columns:150px 1fr 1fr 85px;gap:8px;font-size:11px;font-family:var(--mono);padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.03);align-items:center;transition:background 0.15s;}
 .log-row:hover{background:rgba(0,229,160,0.025);}
@@ -238,7 +246,6 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
     <div class="wb-badge">SESSION ACTIVE</div>
   </div>
 
-  <!-- Pending device alert bar -->
   <div class="pending-alert" id="pending-alert">
     <div class="pa-left">
       <div class="pa-dot"></div>
@@ -281,6 +288,7 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
       </div>
       <div class="panel">
         <div class="panel-title">Camera Feeds <span class="panel-badge" id="cam-badge">LOCKED</span></div>
+
         <!-- Camera 1 -->
         <div class="cam-feed" id="cam1-container">
           <div class="cam-locked" id="cam1-locked">
@@ -295,8 +303,19 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
             <img class="cam-img" id="cam1-img" src="" alt="Camera 1" onclick="toggleCam(1)" title="Click to expand"/>
           </div>
         </div>
+
+        <!-- Camera 1 connect row -->
+        <div id="cam1-connect-area">
+          <div class="cam-connect-row">
+            <input class="cam-connect-input" id="cam1-url-input" placeholder="https://xxxx.ngrok-free.app/video" />
+            <button class="cam-connect-btn" onclick="connectCamDirect(1)">📷 CONNECT</button>
+            <button class="cam-disconnect-btn" onclick="disconnectCamDirect(1)" id="cam1-disconnect" style="display:none;">✕ DISC</button>
+          </div>
+          <div class="cam-url-hint">Paste your ngrok URL here — stream loads directly in browser (no server relay)</div>
+        </div>
+
         <!-- Camera 2 -->
-        <div class="cam-feed" id="cam2-container">
+        <div class="cam-feed" style="margin-top:10px;" id="cam2-container">
           <div class="cam-locked" id="cam2-locked">
             <div class="cam-inner">
               <div class="cam-dot" style="background:var(--red);box-shadow:0 0 10px var(--red);"></div>
@@ -309,7 +328,18 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
             <img class="cam-img" id="cam2-img" src="" alt="Camera 2" onclick="toggleCam(2)" title="Click to expand"/>
           </div>
         </div>
-        <div style="font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:8px;text-align:center;">Unlocks when all 6/6 nodes agree + approved device</div>
+
+        <!-- Camera 2 connect row -->
+        <div id="cam2-connect-area">
+          <div class="cam-connect-row">
+            <input class="cam-connect-input" id="cam2-url-input" placeholder="https://xxxx.ngrok-free.app/video (optional)" />
+            <button class="cam-connect-btn" onclick="connectCamDirect(2)">📷 CONNECT</button>
+            <button class="cam-disconnect-btn" onclick="disconnectCamDirect(2)" id="cam2-disconnect" style="display:none;">✕ DISC</button>
+          </div>
+          <div class="cam-url-hint">Optional second camera</div>
+        </div>
+
+        <div style="font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:10px;text-align:center;">Unlocks when all 6/6 nodes agree + approved device</div>
       </div>
     </div>
     <div class="panel grid-full">
@@ -445,7 +475,6 @@ const socket=io();
 socket.on('login_attempt',d=>{loadLogs();loadMetrics();showToast(`Login: ${d.username} from ${d.ip} — ${d.result}`,d.result==='GRANTED'?'success':d.result==='SUSPICIOUS'?'warning':'error');});
 socket.on('ai_alert',d=>{loadAiLogs();showToast(`🚨 AI Alert: ${d.message}`,'warning',5000);});
 socket.on('new_ai_log',d=>{
-  // Real-time push to AI log tab — no need to refresh
   loadAiLogs();
   const sev=d.severity||'MEDIUM';
   const color=sev==='CRITICAL'?'error':sev==='HIGH'?'warning':'info';
@@ -529,28 +558,77 @@ function toggleCam(id){
   if(btn)btn.textContent=expanded?'⛶ COLLAPSE':'⛶ EXPAND';
 }
 
-// ── CAMERA ──
-let _cameraOpen=false;
+// ── CAMERA DIRECT CONNECT (browser → ngrok, no server relay) ──
+const _directCamUrls = {1: '', 2: ''};
+
+function connectCamDirect(camId) {
+  const input = document.getElementById(`cam${camId}-url-input`);
+  const url = input.value.trim();
+  if (!url) { showToast('Paste your ngrok URL first', 'error'); return; }
+
+  const img = document.getElementById(`cam${camId}-img`);
+  img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+  img.onerror = () => {
+    showToast(`Cam ${camId}: could not load stream — check URL`, 'error');
+    disconnectCamDirect(camId);
+  };
+
+  _directCamUrls[camId] = url;
+  document.getElementById(`cam${camId}-locked`).style.display = 'none';
+  document.getElementById(`cam${camId}-live`).style.display = 'block';
+  document.getElementById(`cam${camId}-disconnect`).style.display = 'inline-block';
+  document.getElementById('cam-badge').textContent = 'LIVE';
+  showToast(`📷 Cam ${camId} connected directly`, 'success');
+
+  // Also register on server side for Guard AI awareness
+  fetch('/api/camera/connect', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cam_id: camId, url: url})
+  }).catch(()=>{});
+}
+
+function disconnectCamDirect(camId) {
+  _directCamUrls[camId] = '';
+  const img = document.getElementById(`cam${camId}-img`);
+  img.src = '';
+  document.getElementById(`cam${camId}-locked`).style.display = 'flex';
+  document.getElementById(`cam${camId}-live`).style.display = 'none';
+  document.getElementById(`cam${camId}-disconnect`).style.display = 'none';
+  const anyLive = Object.values(_directCamUrls).some(u => u);
+  document.getElementById('cam-badge').textContent = anyLive ? 'LIVE' : 'LOCKED';
+  showToast(`Cam ${camId} disconnected`, 'info');
+}
+
+// ── ORIGINAL CAMERA (server-relay, for consensus-gated auto-unlock) ──
+let _cameraOpen = false;
 function setCameraState(open){
-  _cameraOpen=open;
-  document.getElementById('cam-badge').textContent=open?'2 LIVE':'LOCKED';
+  _cameraOpen = open;
+  // Only auto-open server-relay cams if no direct cam is already set
   for(let i=1;i<=2;i++){
-    document.getElementById(`cam${i}-locked`).style.display=open?'none':'flex';
-    document.getElementById(`cam${i}-live`).style.display=open?'block':'none';
+    if (_directCamUrls[i]) continue; // already directly connected
+    document.getElementById(`cam${i}-locked`).style.display = open ? 'none' : 'flex';
+    document.getElementById(`cam${i}-live`).style.display = open ? 'block' : 'none';
     if(open){
-      const img=document.getElementById(`cam${i}-img`);
-      // Append timestamp to bust cache on reconnect
-      img.src=`/api/camera/${i}/stream?t=${Date.now()}`;
+      const img = document.getElementById(`cam${i}-img`);
+      img.src = `/api/camera/${i}/stream?t=${Date.now()}`;
     } else {
-      document.getElementById(`cam${i}-img`).src='';
+      document.getElementById(`cam${i}-img`).src = '';
     }
   }
+  if(open) document.getElementById('cam-badge').textContent = 'LIVE';
 }
-// Check camera status on load
+
 async function checkCameraStatus(){
   try{
-    const d=await fetch('/api/camera/status').then(r=>r.json());
+    const d = await fetch('/api/camera/status').then(r=>r.json());
     setCameraState(d.accessible);
+    // Pre-fill input if CAMERA_1_URL was set on server
+    for(const[k,v] of Object.entries(d.cameras||{})){
+      if(v.masked_url && !document.getElementById(`cam${k}-url-input`).value){
+        // Don't fill masked URL (it has *** in it), just leave placeholder
+      }
+    }
   }catch(e){}
 }
 checkCameraStatus();
@@ -626,7 +704,7 @@ async function loadLogs(){
 }
 loadLogs();
 
-// ── DEVICES (real API) ──
+// ── DEVICES ──
 async function loadDevices(){
   try{
     const data=await fetch('/api/devices').then(r=>r.json());
@@ -664,25 +742,23 @@ async function loadDevices(){
 }
 
 function doApproveDevice(device_id,username){
-  confirm2({title:'Approve Device?',msg:`Allow <strong>${username}</strong>'s device to authenticate? Node 4 will accept signatures from this device.`,icon:'✅',iconClass:'success',btnLabel:'APPROVE',btnClass:'success',
+  confirm2({title:'Approve Device?',msg:`Allow <strong>${username}</strong>'s device to authenticate?`,icon:'✅',iconClass:'success',btnLabel:'APPROVE',btnClass:'success',
     onConfirm:async()=>{
       await fetch('/api/devices/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id})});
       loadDevices();loadMetrics();showToast(`Device approved for ${username}`,'success');
     }
   });
 }
-
 function doRejectDevice(device_id,username){
-  confirm2({title:'Reject Device?',msg:`Reject <strong>${username}</strong>'s device? They will not be able to authenticate from this device.`,icon:'🚫',iconClass:'danger',btnLabel:'REJECT',btnClass:'danger',
+  confirm2({title:'Reject Device?',msg:`Reject <strong>${username}</strong>'s device?`,icon:'🚫',iconClass:'danger',btnLabel:'REJECT',btnClass:'danger',
     onConfirm:async()=>{
       await fetch('/api/devices/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id})});
       loadDevices();loadMetrics();showToast(`Device rejected for ${username}`,'warning');
     }
   });
 }
-
 function doDeleteDevice(device_id,username){
-  confirm2({title:'Revoke Device?',msg:`Permanently revoke <strong>${username}</strong>'s device? They must re-register from that device.`,icon:'🗑️',iconClass:'danger',btnLabel:'REVOKE',btnClass:'danger',
+  confirm2({title:'Revoke Device?',msg:`Permanently revoke <strong>${username}</strong>'s device?`,icon:'🗑️',iconClass:'danger',btnLabel:'REVOKE',btnClass:'danger',
     onConfirm:async()=>{
       await fetch('/api/devices/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_id})});
       loadDevices();loadMetrics();showToast(`Device revoked for ${username}`,'error');
@@ -754,14 +830,11 @@ async function loadAiLogs(){
     if(!data.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No AI anomaly events yet</div>';return;}
     data.forEach(l=>{
       const div=document.createElement('div');div.className='ai-row';
-      // Determine severity tag from description
       const desc=l.description||'Anomaly detected';
       const sevMatch=desc.match(/CRITICAL|HIGH|MEDIUM|LOW/);
       const sev=sevMatch?sevMatch[0]:'FLAGGED';
       const sevColor=sev==='CRITICAL'?'var(--red)':sev==='HIGH'?'var(--amber)':sev==='MEDIUM'?'var(--blue)':'var(--accent)';
       const sevBg=sev==='CRITICAL'?'rgba(255,77,77,0.11)':sev==='HIGH'?'rgba(255,179,68,0.11)':sev==='MEDIUM'?'rgba(0,180,216,0.11)':'rgba(0,229,160,0.11)';
-      // Extract type from description if available
-      const typeMatch=desc.match(/^([A-Z_]+)\s/);
       const typeLabel=l.flagged?(sev==='CRITICAL'?'🚨 CRITICAL':sev==='HIGH'?'⚠️ HIGH':sev==='MEDIUM'?'📌 MEDIUM':'NORMAL'):'NORMAL';
       div.innerHTML=`
         <div style="flex:1;">
@@ -823,7 +896,7 @@ async function doAddUser(){
   document.getElementById('usr-password').value='';
   document.getElementById('usr-role').value='';
   loadUsers();
-  showToast(`User '${username}' added! They must register their device to login.`,'success',5000);
+  showToast(`User '${username}' added!`,'success',5000);
 }
 
 // ── GUARD AI CHAT ──
@@ -855,16 +928,10 @@ async function sendChat(){
     const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg})});
     const data=await res.json();
     removeTyping();
-    // Show reply directly if SocketIO hasn't delivered it yet (fallback)
-    if(data.reply && data.reply.startsWith('Guard unavailable')) appendChatMsg('assistant', data.reply);
+    if(data.reply&&data.reply.startsWith('Guard unavailable')) appendChatMsg('assistant',data.reply);
     if(data.error) appendChatMsg('assistant','Error: '+data.error);
-    if(data.action_result && data.action_result.length){
-      loadBlacklist();loadWhitelist();loadSessions();loadMetrics();loadDevices();
-    }
-  }catch(e){
-    removeTyping();
-    appendChatMsg('assistant','Connection error.');
-  }
+    if(data.action_result&&data.action_result.length){loadBlacklist();loadWhitelist();loadSessions();loadMetrics();loadDevices();}
+  }catch(e){removeTyping();appendChatMsg('assistant','Connection error.');}
   btn.disabled=false;
 }
 async function loadChatHistory(){
@@ -873,14 +940,9 @@ async function loadChatHistory(){
     const c=document.getElementById('chat-messages');
     if(c.children.length>1)return;
     data.forEach(m=>{
-      if(m.role==='user'){
-        const sender=m.sender||'';
-        const isMe=!sender||sender==='{{ user }}';
-        if(isMe) appendChatMsg('user',m.message,fmtTs(m.timestamp));
-        else appendChatMsg('other-user',m.message,fmtTs(m.timestamp),sender);
-      }
-      else if(m.role==='assistant') appendChatMsg('assistant',m.message,fmtTs(m.timestamp));
-      else if(m.role==='system') appendChatMsg('system-alert',m.message,fmtTs(m.timestamp));
+      if(m.role==='user'){const sender=m.sender||'';const isMe=!sender||sender==='{{ user }}';if(isMe)appendChatMsg('user',m.message,fmtTs(m.timestamp));else appendChatMsg('other-user',m.message,fmtTs(m.timestamp),sender);}
+      else if(m.role==='assistant')appendChatMsg('assistant',m.message,fmtTs(m.timestamp));
+      else if(m.role==='system')appendChatMsg('system-alert',m.message,fmtTs(m.timestamp));
     });
   }catch(e){}
 }
