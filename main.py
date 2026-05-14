@@ -693,8 +693,14 @@ def _run_tool(tool_name, args):
         else: return f"Unknown tool: {tool_name}"
     except Exception as e: return f"Tool error: {e}"
 
+_ctx_cache: dict = {'data': None, 'ts': 0}
+_ctx_ttl = 10  # seconds
+
 def _get_system_context():
-    """Single DB transaction — avoids multiple connections."""
+    """Cached — refreshes every 10s. Avoids DB hit on every chat message."""
+    now = time.time()
+    if _ctx_cache['data'] and now - _ctx_cache['ts'] < _ctx_ttl:
+        return _ctx_cache['data']
     try:
         with get_db() as conn:
             from database import get_cursor as _gc
@@ -725,8 +731,11 @@ def _get_system_context():
         for a in ai_logs:
             ctx += f"  {mask_ip(str(a.get('ip','')))} user={a.get('username','')} score={a.get('score','')} flagged={a.get('flagged','')}\n"
         ctx += f"Blacklisted: {bl_count} | Whitelisted: {wl_count}\n"
+        _ctx_cache['data'] = ctx
+        _ctx_cache['ts']   = now
         return ctx
-    except Exception as e: return f"(context error: {e})"
+    except Exception as e:
+        return _ctx_cache['data'] or f"(context error: {e})"
 
 GUARD_SYSTEM_PROMPT = """You are NETAD Guard — AI security officer of the NETAD multi-layer camera security system. Built by a 7-person team in the Philippines.
 
