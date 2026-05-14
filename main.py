@@ -440,7 +440,9 @@ def log_all_threats(username, ip, data, result, votes, user_agent='', csrf_faile
             'flagged': True, 'timestamp': str(datetime.datetime.now())
         })
         t['ip'] = ip; t['username'] = username
-        _groq_analyze_async(t)
+        # Only call Groq for HIGH and CRITICAL — skip MEDIUM/LOW to save tokens
+        if t.get('severity') in ('HIGH', 'CRITICAL'):
+            _groq_analyze_async(t)
 
 # ══════════════════════════════════════════════════
 # ROUTES
