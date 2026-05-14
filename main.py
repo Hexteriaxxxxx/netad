@@ -18,7 +18,7 @@ from database import (
     get_db
 )
 from dotenv import load_dotenv
-import os, threading, time, secrets, json, base64, re
+import os, threading, time, secrets, json, base64, re, datetime
 
 load_dotenv()
 
@@ -62,7 +62,7 @@ def on_subscribe():
     if 'user' not in session: return False
 
 # ══════════════════════════════════════════════════
-# CAMERA — ngrok / HTTP MJPEG + RTSP
+# CAMERA
 # ══════════════════════════════════════════════════
 CAMERA_URLS   = {1: os.environ.get('CAMERA_1_URL', ''), 2: os.environ.get('CAMERA_2_URL', '')}
 _dynamic_cams: dict = {}
@@ -83,21 +83,16 @@ def _mask_cam_url(url):
     return re.sub(r'://([^:@/]+):([^@/]+)@', r'://***:***@', url) if url else ''
 
 def generate_camera_stream(cam_id):
-    """
-    HTTP MJPEG (ngrok, IP Webcam) — uses requests streaming, low latency.
-    RTSP — uses OpenCV.
-    """
     url = get_camera_url(cam_id)
     if not url: return
-
     is_http = url.lower().startswith('http')
-
     if is_http:
         import requests
         while True:
             if not is_consensus_granted(): break
             try:
-                with requests.get(url, stream=True, timeout=10) as r:
+                with requests.get(url, stream=True, timeout=10,
+                                  headers={'ngrok-skip-browser-warning': 'true'}) as r:
                     buf = b''
                     for chunk in r.iter_content(chunk_size=4096):
                         if not is_consensus_granted(): break
@@ -146,7 +141,7 @@ def api_camera_connect():
     url    = data.get('url', '').strip()
     if not url: return jsonify({'error': 'missing url'}), 400
     if not re.match(r'^(rtsp|rtsps|http|https)://', url, re.IGNORECASE):
-        return jsonify({'error': 'invalid URL — must start with rtsp:// or http://'}), 400
+        return jsonify({'error': 'invalid URL'}), 400
     if cam_id not in [1, 2]: return jsonify({'error': 'cam_id must be 1 or 2'}), 400
     _dynamic_cams[cam_id] = url
     masked = _mask_cam_url(url)
@@ -284,10 +279,41 @@ def validate_csrf(token):
             del _csrf_tokens[token]; return False
         del _csrf_tokens[token]; return True
 
+# ── RATE LIMITERS ──
+_public_rate: dict = {}
+_public_rate_lock  = threading.Lock()
+
+def public_rate_ok(ip, max_per_min=15):
+    now = time.time()
+    with _public_rate_lock:
+        bucket = _public_rate.setdefault(ip, [])
+        _public_rate[ip] = [t for t in bucket if now - t < 60]
+        if len(_public_rate[ip]) >= max_per_min: return False
+        _public_rate[ip].append(now); return True
+
+_dev_reg: dict = {}
+_dev_reg_lock  = threading.Lock()
+
+def check_dev_rate(ip, max_attempts=3, window=3600):
+    now = time.time()
+    with _dev_reg_lock:
+        _dev_reg.setdefault(ip, [])
+        _dev_reg[ip] = [t for t in _dev_reg[ip] if now - t < window]
+        if len(_dev_reg[ip]) >= max_attempts: return False
+        _dev_reg[ip].append(now); return True
+
+# ── CLEANUP WORKER ──
 def token_cleanup_worker():
     while True:
         try: cleanup_used_tokens()
         except Exception as e: print(f"Token cleanup: {e}")
+        now = time.time()
+        with _public_rate_lock:
+            stale = [ip for ip, ts in _public_rate.items() if not ts or now - max(ts) > 120]
+            for ip in stale: del _public_rate[ip]
+        with _dev_reg_lock:
+            stale = [ip for ip, ts in _dev_reg.items() if not ts or now - max(ts) > 3600]
+            for ip in stale: del _dev_reg[ip]
         time.sleep(120)
 
 def mask_ip(ip):
@@ -307,18 +333,6 @@ def _notify_guard(message):
         socketio.emit('chat_message', {'role': 'system', 'message': message})
     except Exception: pass
 
-# ── PUBLIC RATE LIMITER ──
-_public_rate: dict = {}
-_public_rate_lock  = threading.Lock()
-
-def public_rate_ok(ip, max_per_min=15):
-    now = time.time()
-    with _public_rate_lock:
-        bucket = _public_rate.setdefault(ip, [])
-        _public_rate[ip] = [t for t in bucket if now - t < 60]
-        if len(_public_rate[ip]) >= max_per_min: return False
-        _public_rate[ip].append(now); return True
-
 # ══════════════════════════════════════════════════
 # THREAT DETECTION ENGINE
 # ══════════════════════════════════════════════════
@@ -335,7 +349,6 @@ _ATTACK_AGENTS = [
     "zgrab", "shodan", "censys",
 ]
 
-# Cache valid usernames — refreshes every 60s to pick up new users
 _valid_users_cache: dict = {'users': set(), 'ts': 0}
 _valid_users_lock = threading.Lock()
 
@@ -358,14 +371,11 @@ def _get_valid_users():
         return _valid_users_cache['users'] or {'admin', 'kevin', 'josiah', 'jm', 'karl', 'nico', 'lj'}
 
 def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed=False):
-    import datetime
     threats = []
     ua      = (user_agent or '').lower()
     granted = result == 'GRANTED'
 
-    # Skip most threat checks on successful logins from known users — reduces noise
-    # Still check SQL injection and attack tools even on success (paranoia is good)
-
+    # SQL injection + attack tools — always check even on successful logins
     for field, val in [('username', data.get('_raw_username', username)), ('password', data.get('_raw_password', ''))]:
         v = val.lower()
         for p in _SQL_PATTERNS:
@@ -378,7 +388,7 @@ def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed
             threats.append({'type': 'ATTACK_TOOL', 'description': f'Attack tool UA: {user_agent[:80]}', 'severity': 'HIGH', 'score': -0.8})
             break
 
-    # === DENIED-only checks below ===
+    # === DENIED-only checks — skip entirely on successful logins ===
     if not granted:
 
         if username and username not in _get_valid_users():
@@ -397,20 +407,21 @@ def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed
         if len(votes) >= 6 and votes[5] == 'FAIL':
             threats.append({'type': 'REPLAY_ATTACK', 'description': f'Token already consumed — replay attack from {mask_ip(ip)}', 'severity': 'HIGH', 'score': -0.8})
 
-        # OFF_HOURS — log only, MEDIUM severity, never blocks on its own
-        # Isolation Forest needs 50+ real logins before its estimates are reliable
-        ph_hour = (datetime.datetime.utcnow().hour + 8) % 24
+        # OFF_HOURS — log only (MEDIUM), never blocks on its own
+        # Isolation Forest needs sufficient real data before estimates are reliable
+        ph_hour = (datetime.datetime.now(datetime.timezone.utc).hour + 8) % 24
         if ph_hour >= 22 or ph_hour < 5:
             threats.append({'type': 'OFF_HOURS', 'description': f'Failed login at {ph_hour:02d}:00 PH — outside normal hours (5AM-10PM)', 'severity': 'MEDIUM', 'score': -0.3})
 
-    # CREDENTIAL_LEAK — fires even on denied, because password being correct is the signal
-    # But only when it's a known valid user (otherwise it's just a wrong-user attempt)
+    # CREDENTIAL_LEAK — only for known valid users, only on denied logins
     if len(votes) >= 2 and votes[1] == 'PASS' and not granted:
         if username in _get_valid_users():
             threats.append({'type': 'CREDENTIAL_LEAK', 'description': f'Correct password but denied — password may be compromised for "{username}"', 'severity': 'CRITICAL', 'score': -0.95})
 
     return threats
 
+# Semaphore — max 3 concurrent Groq threat analyses
+_groq_semaphore = threading.Semaphore(3)
 
 def _groq_analyze_async(threat):
     def _run():
@@ -444,7 +455,6 @@ def _groq_analyze_async(threat):
     threading.Thread(target=_run, daemon=True).start()
 
 def log_all_threats(username, ip, data, result, votes, user_agent='', csrf_failed=False):
-    import datetime
     threats = detect_threats(username, ip, data, result, votes, user_agent, csrf_failed)
     for t in threats:
         add_ai_log(ip=ip, username=username, description=t['description'], score=t['score'], flagged=True)
@@ -455,21 +465,17 @@ def log_all_threats(username, ip, data, result, votes, user_agent='', csrf_faile
             'flagged': True, 'timestamp': str(datetime.datetime.now())
         })
         t['ip'] = ip; t['username'] = username
-        # Only Groq analyze HIGH and CRITICAL — skip MEDIUM to save tokens
         if t.get('severity') in ('HIGH', 'CRITICAL'):
             _groq_analyze_async(t)
 
 # ══════════════════════════════════════════════════
-# GUARD AI — SYSTEM CONTEXT WITH CACHE
+# GUARD AI
 # ══════════════════════════════════════════════════
-
-# Cache — one DB hit per 10 seconds max, shared across ALL chat requests
 _ctx_cache: dict = {'data': None, 'ts': 0}
 _ctx_lock = threading.Lock()
-CTX_TTL = 10  # seconds
+CTX_TTL = 10
 
 def _get_system_context():
-    """Cached system context — avoids 6 DB queries per chat message."""
     now = time.time()
     with _ctx_lock:
         if _ctx_cache['data'] and now - _ctx_cache['ts'] < CTX_TTL:
@@ -511,7 +517,6 @@ def _get_system_context():
             _ctx_cache['ts']   = now
         return ctx
     except Exception as e:
-        # Return stale cache if DB is down — better than nothing
         return _ctx_cache['data'] or f"(context error: {e})"
 
 GUARD_TOOLS = [
@@ -521,7 +526,7 @@ GUARD_TOOLS = [
     {'type': 'function', 'function': {'name': 'add_whitelist', 'description': 'Add an IP to the whitelist.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}, 'label': {'type': 'string'}}, 'required': ['ip']}}},
     {'type': 'function', 'function': {'name': 'remove_whitelist', 'description': 'Remove an IP from the whitelist.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
     {'type': 'function', 'function': {'name': 'kick_session', 'description': 'Force logout a specific user. ONLY when admin explicitly names the person.', 'parameters': {'type': 'object', 'properties': {'username': {'type': 'string'}}, 'required': ['username']}}},
-    {'type': 'function', 'function': {'name': 'connect_camera', 'description': 'Connect a camera stream URL at runtime.', 'parameters': {'type': 'object', 'properties': {'cam_id': {'type': 'integer', 'description': '1 or 2'}, 'url': {'type': 'string', 'description': 'rtsp:// or http:// stream URL'}}, 'required': ['cam_id', 'url']}}},
+    {'type': 'function', 'function': {'name': 'connect_camera', 'description': 'Connect a camera stream URL at runtime.', 'parameters': {'type': 'object', 'properties': {'cam_id': {'type': 'integer'}, 'url': {'type': 'string'}}, 'required': ['cam_id', 'url']}}},
 ]
 
 def _run_tool(tool_name, args):
@@ -563,7 +568,6 @@ DEMO ANSWER — "Can Sir log in with the password?":
 "No. Password passes Node 1 only. Node 3 rejects his IP (not whitelisted). Node 4 rejects his device (private key never left his browser — no approved key in DB). Two independent cryptographic layers block him. Camera stays locked."
 
 CAMERA: When admin provides an ngrok or HTTP URL for camera, call connect_camera tool immediately.
-ngrok format: https://xxxx.ngrok.io/video or /shot.jpg or /stream
 
 RULES:
 1. Informational queries → NEVER call tools. Just report data from system context.
@@ -610,7 +614,6 @@ def api_chat():
                 result = _run_tool(tc.function.name, args)
                 actions.append({'tool': tc.function.name, 'args': args, 'result': result})
                 messages.append({'role': 'tool', 'tool_call_id': tc.id, 'content': result})
-                # Invalidate context cache after tool actions that modify state
                 with _ctx_lock: _ctx_cache['ts'] = 0
             fu    = client.chat.completions.create(model='llama-3.3-70b-versatile', messages=messages, max_tokens=512, temperature=0.3)
             reply = fu.choices[0].message.content.strip()
@@ -628,98 +631,89 @@ def api_chat_history():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_chat_logs(50)])
 
-# ── DEVICE REGISTRATION RATE LIMIT ──
-_dev_reg: dict = {}
-_dev_reg_lock  = threading.Lock()
+# ── ROUTES ──
+@app.route('/')
+def index(): return render_template('login.html')
 
-def check_dev_rate(ip, max_attempts=3, window=3600):
-    now = time.time()
-    with _dev_reg_lock:
-        _dev_reg.setdefault(ip, [])
-        _dev_reg[ip] = [t for t in _dev_reg[ip] if now - t < window]
-        if len(_dev_reg[ip]) >= max_attempts: return False
-        _dev_reg[ip].append(now); return True
+@app.route('/dashboard')
+def dashboard():
+    if 'user' not in session: return redirect('/logout')
+    return render_template('dashboard.html', user=session.get('user', 'admin'))
 
-@app.route('/api/register-device', methods=['POST'])
-def api_register_device():
-    d         = request.get_json()
-    username  = d.get('username', '').strip()
-    device_id = d.get('device_id', '').strip()
-    pub_key   = d.get('public_key', '').strip()
-    label     = str(d.get('label', 'Unknown Device'))[:50].strip()
-    client_ip = request.remote_addr
-    if not username or not device_id or not pub_key: return jsonify({'error': 'registration failed'}), 400
-    if not check_dev_rate(client_ip): return jsonify({'error': 'registration failed'}), 429
-    if not get_user(username): return jsonify({'error': 'registration failed'}), 400
-    register_device(username, device_id, pub_key, label, registered_ip=client_ip)
-    if username == 'admin':
-        approve_device(device_id)
-        add_to_whitelist(client_ip, f'admin ({label[:30]})')
-        return jsonify({'status': 'approved'})
-    pending = len(get_pending_devices())
-    socketio.emit('device_pending', {'username': username, 'device_id': device_id, 'label': label, 'pending_count': pending})
-    return jsonify({'status': 'pending'})
+@app.route('/logout')
+def logout():
+    user = session.get('user')
+    if user: delete_session(user)
+    session.clear(); set_consensus_state(False)
+    return redirect('/')
 
-@app.route('/api/update-ip', methods=['POST'])
-def api_update_ip():
-    d          = request.get_json()
-    username   = d.get('username', '').strip()
-    device_id  = d.get('device_id', '').strip()
-    device_sig = d.get('device_signature', '')
-    device_msg = d.get('device_message', '')
-    client_ip  = request.remote_addr
-    if not all([username, device_id, device_sig, device_msg]): return jsonify({'error': 'request failed'}), 400
-    if not check_dev_rate(client_ip, max_attempts=5): return jsonify({'error': 'request failed'}), 429
-    if node4_device_signature({'username': username, 'device_id': device_id, 'device_signature': device_sig, 'device_message': device_msg}) != 'PASS':
-        add_log(username, client_ip, 'DENIED', 'IP update — invalid sig')
-        return jsonify({'error': 'invalid device signature'}), 403
-    dev   = get_device(device_id)
-    label = dev['label'] if dev else 'Updated device'
-    add_to_whitelist(client_ip, f'{username} ({label[:30]})')
-    add_log(username, client_ip, 'GRANTED', 'IP updated via device sig')
-    return jsonify({'success': True, 'new_ip': client_ip})
+@app.route('/api/csrf')
+def get_csrf():
+    if not public_rate_ok(request.remote_addr): return jsonify({'error': 'rate limited'}), 429
+    return jsonify({'csrf_token': generate_csrf()})
 
-@app.route('/api/device-status')
-def api_device_status():
-    did = request.args.get('device_id', '')
-    if not did: return jsonify({'status': 'unknown'})
-    dev = get_device(did)
-    return jsonify({'status': dev['status'] if dev else 'not_registered'})
+@app.route('/api/token')
+def get_token():
+    if not public_rate_ok(request.remote_addr): return jsonify({'error': 'rate limited'}), 429
+    return jsonify({'token': secrets.token_hex(32)})
 
-@app.route('/api/devices')
-def api_devices():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    result = []
-    for d in get_all_devices():
-        row = dict(d); row.pop('public_key', None)
-        if row.get('created_at'): row['created_at'] = str(row['created_at'])
-        if row.get('approved_at'): row['approved_at'] = str(row['approved_at'])
-        result.append(row)
-    return jsonify(result)
-
-@app.route('/api/devices/approve', methods=['POST'])
-def api_device_approve():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    did = request.get_json()['device_id']
-    approve_device(did)
-    dev = get_device(did)
-    if dev and dev.get('registered_ip'):
-        add_to_whitelist(dev['registered_ip'], f"{dev['username']} ({dev['label'][:30]})")
-    socketio.emit('device_approved', {'device_id': did})
-    log_admin('approve_device', did)
-    return jsonify({'success': True})
-
-@app.route('/api/devices/reject', methods=['POST'])
-def api_device_reject():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    reject_device(request.get_json()['device_id'])
-    return jsonify({'success': True})
-
-@app.route('/api/devices/delete', methods=['POST'])
-def api_device_delete():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    delete_device(request.get_json()['device_id'])
-    return jsonify({'success': True})
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    if not data: return jsonify({'granted': False, 'error': 'invalid request'})
+    username      = data.get('username', '').strip()[:50]
+    password      = data.get('password', '')[:128]
+    csrf_token    = data.get('csrf_token', '')[:128]
+    session_token = data.get('session_token', '')[:128] or secrets.token_hex(32)
+    client_ip     = request.remote_addr
+    user_agent    = request.headers.get('User-Agent', '')
+    data['_raw_username'] = data.get('username', '')
+    data['_raw_password'] = data.get('password', '')
+    csrf_ok = validate_csrf(csrf_token)
+    if not csrf_ok:
+        add_log(username, client_ip, 'DENIED', 'Invalid CSRF token')
+        threading.Thread(target=log_all_threats, args=(username, client_ip, data, 'DENIED', [], user_agent, True), daemon=True).start()
+        return jsonify({'granted': False, 'error': 'invalid csrf token'})
+    try:
+        from ai.anomaly import is_suspicious
+        suspicious, score = is_suspicious(client_ip, username)
+        if suspicious and not is_whitelisted(client_ip):
+            add_log(username, client_ip, 'SUSPICIOUS', f'AI flagged (score={score:.3f})')
+            add_ai_log(client_ip, username, 'Suspicious login pattern detected', score, True)
+            socketio.emit('ai_alert', {'ip': client_ip, 'username': username, 'score': float(score), 'message': f'Anomalous login from {mask_ip(client_ip)}'})
+            _notify_guard(f"🚨 AI flagged suspicious login from {mask_ip(client_ip)} (user: '{username}', score: {score:.3f})")
+            return jsonify({'granted': False, 'error': 'suspicious behavior detected', 'steps': [{'layer': 'AI Anomaly', 'result': 'FAIL'}]})
+    except Exception as e: print(f"AI check error: {e}")
+    block = Block({'username': username, 'password': password, 'ip': client_ip})
+    try:
+        from security.signer import sign_request
+        signature = sign_request(block.hash)
+    except Exception: signature = ''
+    payload = {
+        'username': username, 'password': password, 'ip': client_ip,
+        'timestamp': block.timestamp, 'hash': block.hash, 'signature': signature,
+        'session_token': session_token,
+        'login_timestamp': data.get('login_timestamp', 0),
+        'device_id': data.get('device_id', ''),
+        'device_signature': data.get('device_signature', ''),
+        'device_message': data.get('device_message', ''),
+    }
+    result, votes, steps = run_consensus(payload)
+    granted = result == 'GRANTED'
+    add_log(username, client_ip, result)
+    threading.Thread(target=log_all_threats, args=(username, client_ip, data, result, votes, user_agent, False), daemon=True).start()
+    if granted:
+        user_data = get_user(username)
+        role = user_data['role'] if user_data else 'Member'
+        sess_token = secrets.token_hex(32)
+        socketio.emit('session_kicked', {'username': username, 'reason': 'new_login'})
+        create_session(username, client_ip, role, sess_token)
+        session['user'] = username
+        session['token'] = sess_token
+        set_consensus_state(True)
+        socketio.emit('camera_access', {'accessible': True, 'reason': '6/6 consensus granted'})
+    socketio.emit('login_attempt', {'username': username, 'ip': client_ip, 'result': result, 'votes': votes})
+    return jsonify({'granted': granted, 'user': username, 'error': '' if granted else 'authentication failed', 'steps': steps, 'votes': votes})
 
 @app.route('/api/node-status')
 def node_status():
@@ -827,6 +821,87 @@ def api_ai_logs():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_ai_logs(20)])
 
+@app.route('/api/register-device', methods=['POST'])
+def api_register_device():
+    d         = request.get_json()
+    username  = d.get('username', '').strip()
+    device_id = d.get('device_id', '').strip()
+    pub_key   = d.get('public_key', '').strip()
+    label     = str(d.get('label', 'Unknown Device'))[:50].strip()
+    client_ip = request.remote_addr
+    if not username or not device_id or not pub_key: return jsonify({'error': 'registration failed'}), 400
+    if not check_dev_rate(client_ip): return jsonify({'error': 'registration failed'}), 429
+    if not get_user(username): return jsonify({'error': 'registration failed'}), 400
+    register_device(username, device_id, pub_key, label, registered_ip=client_ip)
+    if username == 'admin':
+        approve_device(device_id)
+        add_to_whitelist(client_ip, f'admin ({label[:30]})')
+        return jsonify({'status': 'approved'})
+    pending = len(get_pending_devices())
+    socketio.emit('device_pending', {'username': username, 'device_id': device_id, 'label': label, 'pending_count': pending})
+    return jsonify({'status': 'pending'})
+
+@app.route('/api/update-ip', methods=['POST'])
+def api_update_ip():
+    d          = request.get_json()
+    username   = d.get('username', '').strip()
+    device_id  = d.get('device_id', '').strip()
+    device_sig = d.get('device_signature', '')
+    device_msg = d.get('device_message', '')
+    client_ip  = request.remote_addr
+    if not all([username, device_id, device_sig, device_msg]): return jsonify({'error': 'request failed'}), 400
+    if not check_dev_rate(client_ip, max_attempts=5): return jsonify({'error': 'request failed'}), 429
+    if node4_device_signature({'username': username, 'device_id': device_id, 'device_signature': device_sig, 'device_message': device_msg}) != 'PASS':
+        add_log(username, client_ip, 'DENIED', 'IP update — invalid sig')
+        return jsonify({'error': 'invalid device signature'}), 403
+    dev   = get_device(device_id)
+    label = dev['label'] if dev else 'Updated device'
+    add_to_whitelist(client_ip, f'{username} ({label[:30]})')
+    add_log(username, client_ip, 'GRANTED', 'IP updated via device sig')
+    return jsonify({'success': True, 'new_ip': client_ip})
+
+@app.route('/api/device-status')
+def api_device_status():
+    did = request.args.get('device_id', '')
+    if not did: return jsonify({'status': 'unknown'})
+    dev = get_device(did)
+    return jsonify({'status': dev['status'] if dev else 'not_registered'})
+
+@app.route('/api/devices')
+def api_devices():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    result = []
+    for d in get_all_devices():
+        row = dict(d); row.pop('public_key', None)
+        if row.get('created_at'): row['created_at'] = str(row['created_at'])
+        if row.get('approved_at'): row['approved_at'] = str(row['approved_at'])
+        result.append(row)
+    return jsonify(result)
+
+@app.route('/api/devices/approve', methods=['POST'])
+def api_device_approve():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    did = request.get_json()['device_id']
+    approve_device(did)
+    dev = get_device(did)
+    if dev and dev.get('registered_ip'):
+        add_to_whitelist(dev['registered_ip'], f"{dev['username']} ({dev['label'][:30]})")
+    socketio.emit('device_approved', {'device_id': did})
+    log_admin('approve_device', did)
+    return jsonify({'success': True})
+
+@app.route('/api/devices/reject', methods=['POST'])
+def api_device_reject():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    reject_device(request.get_json()['device_id'])
+    return jsonify({'success': True})
+
+@app.route('/api/devices/delete', methods=['POST'])
+def api_device_delete():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    delete_device(request.get_json()['device_id'])
+    return jsonify({'success': True})
+
 @app.route('/api/users')
 def api_get_users():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
@@ -854,7 +929,6 @@ def api_add_user():
                         (username, hashed, role, username))
             if cur.rowcount == 0: return jsonify({'error': 'username already exists'}), 409
         log_admin('add_user', username)
-        # Invalidate user cache so new user is picked up immediately
         with _valid_users_lock: _valid_users_cache['ts'] = 0
         return jsonify({'success': True})
     except Exception as e: return jsonify({'error': str(e)}), 500
