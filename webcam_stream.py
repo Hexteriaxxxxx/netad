@@ -1,7 +1,6 @@
-# webcam_stream.py — NETAD Laptop Webcam Server
-# Streams your laptop webcam as MJPEG over HTTP
-# Run this separately: python webcam_stream.py
-# Then expose it with: ngrok http 8080
+# webcam_stream.py — NETAD Laptop Webcam Server (Windows-optimized)
+# Run: python webcam_stream.py
+# Then: ngrok http 8080
 
 import cv2
 from flask import Flask, Response
@@ -12,51 +11,70 @@ import os
 app = Flask(__name__)
 
 PORT = int(os.environ.get('WEBCAM_PORT', 8080))
-CAMERA_INDEX = int(os.environ.get('WEBCAM_INDEX', 0))  # 0 = default laptop webcam
-JPEG_QUALITY = int(os.environ.get('WEBCAM_QUALITY', 70))
+JPEG_QUALITY = int(os.environ.get('WEBCAM_QUALITY', 50))
 
-# ── Camera ──
-_cap = None
-_cap_lock = threading.Lock()
+_latest_frame = None
+_frame_lock = threading.Lock()
+_running = True
 
-def get_cap():
-    global _cap
-    with _cap_lock:
-        if _cap is None or not _cap.isOpened():
-            _cap = cv2.VideoCapture(CAMERA_INDEX)
-            _cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            _cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            _cap.set(cv2.CAP_PROP_FPS, 30)
-            _cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        return _cap
+def open_camera():
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 15)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    return cap
+
+def capture_loop():
+    global _latest_frame, _running
+    cap = open_camera()
+    if not cap.isOpened():
+        print("[NETAD Webcam] ERROR: Could not open camera!")
+        return
+    print("[NETAD Webcam] Camera opened via DirectShow ✓")
+    while _running:
+        ret, frame = cap.read()
+        if not ret:
+            print("[NETAD Webcam] Frame grab failed, retrying...")
+            cap.release()
+            time.sleep(1)
+            cap = open_camera()
+            continue
+        ret2, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+        if ret2:
+            with _frame_lock:
+                _latest_frame = buf.tobytes()
+        time.sleep(1/15)
+    cap.release()
 
 def generate_frames():
     while True:
-        cap = get_cap()
-        ret, frame = cap.read()
-        if not ret:
-            time.sleep(0.1)
-            continue
-        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
-        if not ret:
-            continue
-        yield (
-            b'--frame\r\n'
-            b'Content-Type: image/jpeg\r\n\r\n' +
-            buffer.tobytes() +
-            b'\r\n'
-        )
-        time.sleep(0.033)  # ~30fps
+        with _frame_lock:
+            frame = _latest_frame
+        if frame:
+            yield (
+                b'--frame\r\n'
+                b'Content-Type: image/jpeg\r\n\r\n' +
+                frame +
+                b'\r\n'
+            )
+        time.sleep(1/15)
 
-# ── Routes ──
+# ── CORS + ngrok bypass headers ──
+@app.after_request
+def add_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = '*'
+    response.headers['ngrok-skip-browser-warning'] = 'true'
+    return response
+
 @app.route('/')
 def index():
     return '''
     <html><body style="background:#000;color:#0f0;font-family:monospace;padding:20px">
     <h2>NETAD Webcam Stream</h2>
     <img src="/video" style="width:640px;border:2px solid #0f0"><br><br>
-    <p>MJPEG URL: <b>/video</b></p>
-    <p>Use this URL in NETAD: <b>http://&lt;your-ngrok-url&gt;/video</b></p>
+    <p>Stream URL: <b>/video</b></p>
     </body></html>
     '''
 
@@ -64,17 +82,36 @@ def index():
 def video_feed():
     return Response(
         generate_frames(),
-        mimetype='multipart/x-mixed-replace; boundary=frame'
+        mimetype='multipart/x-mixed-replace; boundary=frame',
+        headers={
+            'Access-Control-Allow-Origin': '*',
+            'ngrok-skip-browser-warning': 'true',
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no'
+        }
     )
 
 @app.route('/status')
 def status():
-    cap = get_cap()
-    return {'running': cap.isOpened(), 'port': PORT, 'camera_index': CAMERA_INDEX}
+    with _frame_lock:
+        has_frame = _latest_frame is not None
+    return {'running': has_frame, 'port': PORT}
 
 if __name__ == '__main__':
     print(f"[NETAD Webcam] Starting on http://localhost:{PORT}")
-    print(f"[NETAD Webcam] Camera index: {CAMERA_INDEX}")
-    print(f"[NETAD Webcam] Stream URL: http://localhost:{PORT}/video")
-    print(f"[NETAD Webcam] After ngrok: set CAMERA_1_URL=https://xxxx.ngrok-free.app/video")
+    print(f"[NETAD Webcam] Using DirectShow (Windows-stable)")
+    print(f"[NETAD Webcam] Quality: {JPEG_QUALITY}% | FPS: 15")
+
+    t = threading.Thread(target=capture_loop, daemon=True)
+    t.start()
+
+    print("[NETAD Webcam] Waiting for first frame...")
+    for _ in range(30):
+        with _frame_lock:
+            if _latest_frame:
+                break
+        time.sleep(0.2)
+    print("[NETAD Webcam] Stream ready!")
+    print(f"[NETAD Webcam] Open: http://localhost:{PORT}")
+
     app.run(host='0.0.0.0', port=PORT, threaded=True)

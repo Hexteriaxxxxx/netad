@@ -1281,43 +1281,30 @@ def api_add_user():
     except Exception as e: return jsonify({'error': str(e)}), 500
 
 # ── EMERGENCY BREAK-GLASS ACCESS ──
-# Route path is secret — set EMERGENCY_PATH in Railway (default: emergency-access)
-# Set EMERGENCY_ALLOWED_IP to restrict to your IP only
-# One-time use per deployment — resets on Railway redeploy
-_emergency_used = False
+_emergency_used    = False
 _emergency_used_at = 0
 _emergency_cooldown = 300
 
-@app.route('/api/<path:route>', methods=['POST'])
-def dynamic_emergency(route):
+def _emergency_handler():
     global _emergency_used, _emergency_used_at
-    expected = os.environ.get('EMERGENCY_PATH', 'emergency-access')
-    if route != expected:
-        return jsonify({'error': 'not found'}), 404
     emergency_pw = os.environ.get('EMERGENCY_PASSWORD', '')
     allowed_ip   = os.environ.get('EMERGENCY_ALLOWED_IP', '')
     client_ip    = request.remote_addr
-    if not emergency_pw:
-        return jsonify({'error': 'not found'}), 404
-    # IP restriction — only your device can use it
+    if not emergency_pw: return jsonify({'error': 'not found'}), 404
     if allowed_ip and client_ip != allowed_ip:
-        add_log('EMERGENCY', client_ip, 'DENIED', 'IP not authorized for emergency access')
+        add_log('EMERGENCY', client_ip, 'DENIED', 'IP not authorized')
         return jsonify({'error': 'not found'}), 404
-    # One-time use — disabled after first successful use
     if _emergency_used:
-        return jsonify({'error': 'emergency key already consumed — redeploy Railway to reset'}), 429
-    # Cooldown on failed attempts
+        return jsonify({'error': 'emergency key already consumed — redeploy to reset'}), 429
     now = time.time()
     if now - _emergency_used_at < _emergency_cooldown:
-        remaining = int(_emergency_cooldown - (now - _emergency_used_at))
-        return jsonify({'error': f'cooldown active — wait {remaining}s'}), 429
-    data = request.get_json()
+        return jsonify({'error': f'cooldown active — wait {int(_emergency_cooldown-(now-_emergency_used_at))}s'}), 429
+    data = request.get_json() or {}
     if data.get('password') != emergency_pw:
         _emergency_used_at = now
-        add_log('EMERGENCY', client_ip, 'DENIED', 'Wrong emergency password')
+        add_log('EMERGENCY', client_ip, 'DENIED', 'Wrong password')
         return jsonify({'error': 'unauthorized'}), 401
-    # ── ACCESS GRANTED ──
-    _emergency_used = True
+    _emergency_used    = True
     _emergency_used_at = now
     sess_token = secrets.token_hex(32)
     delete_session('admin')
@@ -1328,14 +1315,14 @@ def dynamic_emergency(route):
     add_to_whitelist(client_ip, 'Emergency re-entry')
     forgive_ip(client_ip)
     clear_rate_limit(client_ip)
-    socketio.emit('chat_message', {'role': 'system', 'message': f'🚨 EMERGENCY ACCESS USED from {mask_ip(client_ip)} — one-time key consumed. Change EMERGENCY_PATH after resolving incident.'})
-    add_log('admin', client_ip, 'EMERGENCY', 'Break-glass access used — key consumed')
-    print(f"[EMERGENCY] Access granted to {client_ip} — key now disabled until redeploy")
-    return jsonify({
-        'granted': True,
-        'message': 'Emergency access granted. Logged in as admin. Key is now disabled.',
-        'next_steps': ['Go to /dashboard', 'Approve your device in DEVICES tab', 'Forgive your IP in BLACKLIST tab', 'Change EMERGENCY_PATH in Railway after resolving']
-    })
+    socketio.emit('chat_message', {'role': 'system', 'message': f'🚨 EMERGENCY ACCESS from {mask_ip(client_ip)} — key consumed.'})
+    add_log('admin', client_ip, 'EMERGENCY', 'Break-glass used — key consumed')
+    return jsonify({'granted': True, 'message': 'Emergency access granted. Key disabled.', 'next_steps': ['Go to /dashboard', 'Approve device', 'Forgive IP', 'Change EMERGENCY_PATH']})
+
+# Register emergency route dynamically — only exact secret path is registered
+# Unknown routes get Flask default 404, not caught by this handler
+_em_path = os.environ.get('EMERGENCY_PATH', 'emergency-access')
+app.add_url_rule(f'/api/{_em_path}', 'emergency_access', _emergency_handler, methods=['POST'])
 
 # ── MAIN ──
 if __name__ == '__main__':
