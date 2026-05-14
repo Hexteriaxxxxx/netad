@@ -316,7 +316,14 @@ async function updateMyIP(){
     if(!username){setUpdateStatus('// username unknown — re-register','var(--red)');return;}
     const res=await fetch('/api/update-ip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,device_id:_deviceId,device_signature:sigB64,device_message:message})});
     const data=await res.json();
-    if(data.success){setUpdateStatus(`✓ IP updated to ${data.new_ip}. Try logging in now.`,'var(--accent)');setTimeout(()=>initDevice(),1500);}
+    if(data.success){
+      setUpdateStatus(`✓ IP updated to ${data.new_ip} — logging you in...`,'var(--accent)');
+      // Go back to login section after 1.5s so user can login immediately
+      setTimeout(()=>{
+        document.getElementById('update-ip-status').textContent='';
+        showSection('login');
+      },1500);
+    }
     else{setUpdateStatus('// '+(data.error||'update failed'),'var(--red)');}
   }catch(e){setUpdateStatus('// error: '+e.message,'var(--red)');}
 }
@@ -529,9 +536,31 @@ async function doLogin(){
       setTimeout(()=>{prog.style.opacity='0';document.body.classList.add('leaving');setTimeout(()=>{window.location.href='/dashboard';},400);},1000);
     }else{
       bar.style.background='var(--red)';
-      setStatus('// '+(data.error||'authentication failed'),'var(--red)');
-      document.getElementById('p').classList.add('error');shakeCard();
-      setTimeout(()=>{prog.classList.remove('visible');bar.style.width='0%';bar.style.background='var(--accent)';btn.classList.remove('loading');btn.disabled=false;btn.querySelector('.btn-text').textContent='AUTHENTICATE →';busy=false;},900);
+      // Check if IP Access Control specifically failed — show Update IP button
+      const ipFail = data.steps && data.steps.find(s => s.layer === 'IP Access Control' && s.result === 'FAIL');
+      if(ipFail && _deviceKeyPair && _deviceId){
+        // Store username so updateMyIP() knows who to update for
+        _deviceUsername = _deviceUsername || u;
+        localStorage.setItem('netad_username', u);
+        setTimeout(()=>{
+          prog.classList.remove('visible'); bar.style.width='0%'; bar.style.background='var(--accent)';
+          btn.classList.remove('loading'); btn.disabled=false; btn.querySelector('.btn-text').textContent='AUTHENTICATE →';
+          busy = false;
+          // Show the IP update screen
+          document.getElementById('device-status-msg').innerHTML=
+            `<span style="color:var(--red)">❌ IP NOT WHITELISTED</span><br>`+
+            `<span style="font-size:10px;color:var(--text2)">Your IP changed since last login.<br>`+
+            `Click <b>UPDATE MY IP</b> to re-whitelist using your device key.<br>`+
+            `<span style="color:var(--text3)">(Your device signature proves it's really you)</span></span>`;
+          document.getElementById('update-ip-btn').style.display = 'flex';
+          document.getElementById('update-ip-status').textContent = '';
+          showSection('status');
+        }, 900);
+      } else {
+        setStatus('// '+(data.error||'authentication failed'),'var(--red)');
+        document.getElementById('p').classList.add('error');shakeCard();
+        setTimeout(()=>{prog.classList.remove('visible');bar.style.width='0%';bar.style.background='var(--accent)';btn.classList.remove('loading');btn.disabled=false;btn.querySelector('.btn-text').textContent='AUTHENTICATE →';busy=false;},900);
+      }
     }
   }catch(err){
     clearInterval(stepTimer);bar.style.background='var(--red)';
