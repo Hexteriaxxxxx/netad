@@ -335,6 +335,28 @@ _ATTACK_AGENTS = [
     "zgrab", "shodan", "censys",
 ]
 
+# Cache valid usernames — refreshes every 60s to pick up new users
+_valid_users_cache: dict = {'users': set(), 'ts': 0}
+_valid_users_lock = threading.Lock()
+
+def _get_valid_users():
+    now = time.time()
+    with _valid_users_lock:
+        if now - _valid_users_cache['ts'] < 60 and _valid_users_cache['users']:
+            return _valid_users_cache['users']
+    try:
+        from database import get_cursor as _gc
+        with get_db() as conn:
+            cur = _gc(conn)
+            cur.execute("SELECT username FROM users")
+            users = {row['username'] for row in cur.fetchall()}
+        with _valid_users_lock:
+            _valid_users_cache['users'] = users
+            _valid_users_cache['ts'] = now
+        return users
+    except Exception:
+        return _valid_users_cache['users'] or {'admin', 'kevin', 'josiah', 'jm', 'karl', 'nico', 'lj'}
+
 def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed=False):
     import datetime
     threats = []
@@ -354,17 +376,8 @@ def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed
             threats.append({'type': 'ATTACK_TOOL', 'description': f'Attack tool UA: {user_agent[:80]}', 'severity': 'HIGH', 'score': -0.8})
             break
 
-    # 3. Unknown username — live DB lookup, not hardcoded set
-    # This handles users added via the Users tab without redeployment
-    try:
-        from database import get_cursor as _gc
-        with get_db() as conn:
-            cur = _gc(conn)
-            cur.execute("SELECT username FROM users")
-            VALID = {row['username'] for row in cur.fetchall()}
-    except Exception:
-        VALID = {'admin', 'kevin', 'josiah', 'jm', 'karl', 'nico', 'lj'}  # fallback only if DB is down
-    if username and username not in VALID:
+    # 3. Unknown username — cached DB lookup, handles new users
+    if username and username not in _get_valid_users():
         threats.append({'type': 'UNKNOWN_USERNAME', 'description': f'Unknown username: "{username}"', 'severity': 'MEDIUM', 'score': -0.5})
 
     # 4. Brute force
@@ -379,7 +392,7 @@ def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed
     if len(votes) >= 2 and votes[1] == 'PASS' and result == 'DENIED':
         threats.append({'type': 'CREDENTIAL_LEAK', 'description': f'Correct password but denied — password compromised for "{username}"', 'severity': 'CRITICAL', 'score': -0.95})
 
-    # 6. CSRF bypass — only when CSRF actually failed (flag from login route)
+    # 6. CSRF bypass — only when CSRF actually failed
     if csrf_failed:
         threats.append({'type': 'CSRF_BYPASS_ATTEMPT', 'description': f'Invalid/missing CSRF token from {mask_ip(ip)}', 'severity': 'HIGH', 'score': -0.75})
 
@@ -440,225 +453,65 @@ def log_all_threats(username, ip, data, result, votes, user_agent='', csrf_faile
             'flagged': True, 'timestamp': str(datetime.datetime.now())
         })
         t['ip'] = ip; t['username'] = username
-        # Only call Groq for HIGH and CRITICAL — skip MEDIUM/LOW to save tokens
+        # Only Groq analyze HIGH and CRITICAL — skip MEDIUM to save tokens
         if t.get('severity') in ('HIGH', 'CRITICAL'):
             _groq_analyze_async(t)
 
 # ══════════════════════════════════════════════════
-# ROUTES
+# GUARD AI — SYSTEM CONTEXT WITH CACHE
 # ══════════════════════════════════════════════════
 
-@app.route('/')
-def index(): return render_template('login.html')
+# Cache — one DB hit per 10 seconds max, shared across ALL chat requests
+_ctx_cache: dict = {'data': None, 'ts': 0}
+_ctx_lock = threading.Lock()
+CTX_TTL = 10  # seconds
 
-@app.route('/dashboard')
-def dashboard():
-    if 'user' not in session: return redirect('/logout')
-    return render_template('dashboard.html', user=session.get('user', 'admin'))
-
-@app.route('/logout')
-def logout():
-    user = session.get('user')
-    if user: delete_session(user)
-    session.clear(); set_consensus_state(False)
-    return redirect('/')
-
-@app.route('/api/csrf')
-def get_csrf():
-    if not public_rate_ok(request.remote_addr): return jsonify({'error': 'rate limited'}), 429
-    return jsonify({'csrf_token': generate_csrf()})
-
-@app.route('/api/token')
-def get_token():
-    if not public_rate_ok(request.remote_addr): return jsonify({'error': 'rate limited'}), 429
-    return jsonify({'token': secrets.token_hex(32)})
-
-@app.route('/api/login', methods=['POST'])
-def login():
-    data = request.get_json()
-    if not data: return jsonify({'granted': False, 'error': 'invalid request'})
-
-    username      = data.get('username', '').strip()[:50]
-    password      = data.get('password', '')[:128]
-    csrf_token    = data.get('csrf_token', '')[:128]
-    session_token = data.get('session_token', '')[:128] or secrets.token_hex(32)
-    client_ip     = request.remote_addr
-    user_agent    = request.headers.get('User-Agent', '')
-
-    data['_raw_username'] = data.get('username', '')
-    data['_raw_password']  = data.get('password', '')
-
-    # CSRF check — log threat and return early if failed
-    if not validate_csrf(csrf_token):
-        add_log(username, client_ip, 'DENIED', 'Invalid CSRF token')
-        threading.Thread(
-            target=log_all_threats,
-            args=(username, client_ip, data, 'DENIED', [], user_agent, True),
-            daemon=True
-        ).start()
-        return jsonify({'granted': False, 'error': 'invalid csrf token'})
-
-    # AI anomaly check
+def _get_system_context():
+    """Cached system context — avoids 6 DB queries per chat message."""
+    now = time.time()
+    with _ctx_lock:
+        if _ctx_cache['data'] and now - _ctx_cache['ts'] < CTX_TTL:
+            return _ctx_cache['data']
     try:
-        from ai.anomaly import is_suspicious
-        suspicious, score = is_suspicious(client_ip, username)
-        if suspicious and not is_whitelisted(client_ip):
-            add_log(username, client_ip, 'SUSPICIOUS', f'AI flagged (score={score:.3f})')
-            add_ai_log(client_ip, username, 'Suspicious login pattern detected', score, True)
-            socketio.emit('ai_alert', {'ip': client_ip, 'username': username, 'score': float(score), 'message': f'Anomalous login from {mask_ip(client_ip)}'})
-            _notify_guard(f"🚨 AI flagged login from {mask_ip(client_ip)} (user:'{username}', score:{score:.3f})")
-            return jsonify({'granted': False, 'error': 'suspicious behavior detected', 'steps': [{'layer': 'AI Anomaly', 'result': 'FAIL'}]})
-    except Exception as e: print(f"AI err: {e}")
+        with get_db() as conn:
+            from database import get_cursor as _gc
+            cur = _gc(conn)
+            cur.execute("SELECT * FROM logs ORDER BY timestamp DESC LIMIT 10")
+            logs = cur.fetchall()
+            cur.execute("SELECT * FROM ai_logs ORDER BY timestamp DESC LIMIT 5")
+            ai_logs = cur.fetchall()
+            cur.execute("""SELECT *, CASE WHEN last_seen > NOW()-INTERVAL '60 seconds'
+                THEN true ELSE false END AS online FROM sessions ORDER BY last_seen DESC""")
+            sessions = cur.fetchall()
+            cur.execute("SELECT COUNT(*) as c FROM blacklist")
+            bl_count = cur.fetchone()['c']
+            cur.execute("SELECT COUNT(*) as c FROM whitelist")
+            wl_count = cur.fetchone()['c']
+            cur.execute("SELECT COUNT(*) as c FROM device_keys WHERE status='pending'")
+            pending = cur.fetchone()['c']
 
-    block = Block({'username': username, 'password': password, 'ip': client_ip})
-    try:
-        from security.signer import sign_request
-        signature = sign_request(block.hash)
-    except Exception: signature = ''
+        online = [s for s in sessions if s.get('online')]
+        ctx  = "=== LIVE NETAD STATE ===\n"
+        ctx += f"Camera: {'OPEN' if is_consensus_granted() else 'LOCKED'} | Nodes: ALL 6 ONLINE | Pending devices: {pending}\n"
+        ctx += f"Sessions ({len(online)} online):\n"
+        for s in sessions:
+            ctx += f"  {s.get('username','')} | {'ON' if s.get('online') else 'OFF'} | {mask_ip(str(s.get('ip','')))} | {s.get('role','')}\n"
+        ctx += "Recent logs:\n"
+        for l in logs:
+            ctx += f"  [{str(l.get('timestamp',''))[:19]}] {l.get('result','')} user={l.get('username','')} ip={mask_ip(str(l.get('ip','')))} {l.get('reason','')}\n"
+        ctx += "AI flags:\n"
+        for a in ai_logs:
+            ctx += f"  {mask_ip(str(a.get('ip','')))} user={a.get('username','')} score={a.get('score','')} flagged={a.get('flagged','')}\n"
+        ctx += f"Blacklisted: {bl_count} | Whitelisted: {wl_count}\n"
 
-    payload = {
-        'username': username, 'password': password, 'ip': client_ip,
-        'timestamp': block.timestamp, 'hash': block.hash, 'signature': signature,
-        'session_token': session_token,
-        'login_timestamp': data.get('login_timestamp', 0),
-        'device_id': data.get('device_id', ''),
-        'device_signature': data.get('device_signature', ''),
-        'device_message': data.get('device_message', ''),
-    }
+        with _ctx_lock:
+            _ctx_cache['data'] = ctx
+            _ctx_cache['ts']   = now
+        return ctx
+    except Exception as e:
+        # Return stale cache if DB is down — better than nothing
+        return _ctx_cache['data'] or f"(context error: {e})"
 
-    result, votes, steps = run_consensus(payload)
-    granted = result == 'GRANTED'
-    add_log(username, client_ip, result)
-
-    threading.Thread(
-        target=log_all_threats,
-        args=(username, client_ip, data, result, votes, user_agent, False),
-        daemon=True
-    ).start()
-
-    if granted:
-        user_data  = get_user(username)
-        role       = user_data['role'] if user_data else 'Member'
-        sess_token = secrets.token_hex(32)
-        socketio.emit('session_kicked', {'username': username, 'reason': 'new_login'})
-        create_session(username, client_ip, role, sess_token)
-        session['user']  = username
-        session['token'] = sess_token
-        set_consensus_state(True)
-        socketio.emit('camera_access', {'accessible': True, 'reason': '6/6 consensus granted'})
-
-    socketio.emit('login_attempt', {'username': username, 'ip': client_ip, 'result': result, 'votes': votes})
-    return jsonify({'granted': granted, 'user': username, 'error': '' if granted else 'authentication failed', 'steps': steps, 'votes': votes})
-
-@app.route('/api/node-status')
-def node_status():
-    try:
-        with get_db() as conn: conn.cursor().execute('SELECT 1')
-        db_ok = True
-    except Exception: db_ok = False
-    return jsonify({'password': db_ok, 'timestamp': True, 'ip_whitelist': db_ok, 'digital_sig': True, 'session_token': db_ok, 'rate_limit': db_ok})
-
-@app.route('/api/logs')
-def api_logs():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_logs_today(50)])
-
-@app.route('/api/blacklist')
-def api_blacklist():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    result = []
-    for b in get_blacklist():
-        row = dict(b)
-        if row.get('blocked_until'): row['blocked_until'] = str(row['blocked_until'])
-        result.append(row)
-    return jsonify(result)
-
-@app.route('/api/blacklist/add', methods=['POST'])
-def api_blacklist_add():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    d = request.get_json()
-    add_to_blacklist(d['ip'], d.get('type', 'temporary'))
-    return jsonify({'success': True})
-
-@app.route('/api/blacklist/forgive', methods=['POST'])
-def api_blacklist_forgive():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    ip = request.get_json()['ip']
-    forgive_ip(ip); clear_rate_limit(ip); log_admin('forgive_ip', ip)
-    return jsonify({'success': True})
-
-@app.route('/api/clear-rate-limit', methods=['POST'])
-def api_clear_rate_limit():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    ip = request.get_json().get('ip', '')
-    if not ip: return jsonify({'error': 'missing ip'}), 400
-    clear_rate_limit(ip)
-    socketio.emit('guard_action', {'action': 'clear_rate_limit', 'ip': ip})
-    return jsonify({'success': True})
-
-@app.route('/api/whitelist')
-def api_whitelist():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    return jsonify([dict(w) for w in get_whitelist()])
-
-@app.route('/api/whitelist/add', methods=['POST'])
-def api_whitelist_add():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    d = request.get_json()
-    add_to_whitelist(d['ip'], d.get('label', 'New device'))
-    return jsonify({'success': True})
-
-@app.route('/api/whitelist/remove', methods=['POST'])
-def api_whitelist_remove():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    remove_from_whitelist(request.get_json()['ip'])
-    return jsonify({'success': True})
-
-@app.route('/api/sessions')
-def api_sessions():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    result = []
-    for s in get_sessions():
-        row = dict(s)
-        if row.get('last_seen'): row['last_seen'] = str(row['last_seen'])
-        if row.get('created_at'): row['created_at'] = str(row['created_at'])
-        result.append(row)
-    return jsonify(result)
-
-@app.route('/api/sessions/kick', methods=['POST'])
-def api_sessions_kick():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    d = request.get_json()
-    delete_session(d['username'])
-    socketio.emit('session_kicked', {'username': d['username']})
-    log_admin('kick_session', d['username'])
-    return jsonify({'success': True})
-
-@app.route('/api/session/heartbeat', methods=['POST'])
-def api_session_heartbeat():
-    d         = request.get_json()
-    username  = d.get('username', '')
-    client_ip = request.remote_addr
-    if is_blacklisted(client_ip):
-        session.clear(); set_consensus_state(False)
-        delete_session(username)
-        socketio.emit('session_kicked', {'username': username, 'reason': 'ip_blacklisted'})
-        return jsonify({'ok': False, 'kicked': True, 'reason': 'ip_blacklisted'})
-    update_session_heartbeat(username)
-    still_valid = any(s['username'] == username for s in get_sessions())
-    if not still_valid:
-        session.clear(); set_consensus_state(False)
-        return jsonify({'ok': False, 'kicked': True})
-    return jsonify({'ok': True})
-
-@app.route('/api/ai-logs')
-def api_ai_logs():
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_ai_logs(20)])
-
-# ══════════════════════════════════════════════════
-# GUARD AI
-# ══════════════════════════════════════════════════
 GUARD_TOOLS = [
     {'type': 'function', 'function': {'name': 'block_ip', 'description': 'Block an IP for 30 minutes.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
     {'type': 'function', 'function': {'name': 'forgive_ip', 'description': 'Remove IP from blacklist and clear rate limit.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
@@ -692,50 +545,6 @@ def _run_tool(tool_name, args):
             return f"Camera {cam_id} connected: {masked}"
         else: return f"Unknown tool: {tool_name}"
     except Exception as e: return f"Tool error: {e}"
-
-_ctx_cache: dict = {'data': None, 'ts': 0}
-_ctx_ttl = 10  # seconds
-
-def _get_system_context():
-    """Cached — refreshes every 10s. Avoids DB hit on every chat message."""
-    now = time.time()
-    if _ctx_cache['data'] and now - _ctx_cache['ts'] < _ctx_ttl:
-        return _ctx_cache['data']
-    try:
-        with get_db() as conn:
-            from database import get_cursor as _gc
-            cur = _gc(conn)
-            cur.execute("SELECT * FROM logs ORDER BY timestamp DESC LIMIT 10")
-            logs = cur.fetchall()
-            cur.execute("SELECT * FROM ai_logs ORDER BY timestamp DESC LIMIT 5")
-            ai_logs = cur.fetchall()
-            cur.execute("SELECT *, CASE WHEN last_seen > NOW()-INTERVAL '60 seconds' THEN true ELSE false END AS online FROM sessions ORDER BY last_seen DESC")
-            sessions = cur.fetchall()
-            cur.execute("SELECT COUNT(*) as c FROM blacklist")
-            bl_count = cur.fetchone()['c']
-            cur.execute("SELECT COUNT(*) as c FROM whitelist")
-            wl_count = cur.fetchone()['c']
-            cur.execute("SELECT COUNT(*) as c FROM device_keys WHERE status='pending'")
-            pending = cur.fetchone()['c']
-
-        online = [s for s in sessions if s.get('online')]
-        ctx  = "=== LIVE NETAD STATE ===\n"
-        ctx += f"Camera: {'OPEN' if is_consensus_granted() else 'LOCKED'} | Nodes: ALL 6 ONLINE | Pending devices: {pending}\n"
-        ctx += f"Sessions ({len(online)} online):\n"
-        for s in sessions:
-            ctx += f"  {s.get('username','')} | {'ON' if s.get('online') else 'OFF'} | {mask_ip(str(s.get('ip','')))} | {s.get('role','')}\n"
-        ctx += "Recent logs:\n"
-        for l in logs:
-            ctx += f"  [{str(l.get('timestamp',''))[:19]}] {l.get('result','')} user={l.get('username','')} ip={mask_ip(str(l.get('ip','')))} {l.get('reason','')}\n"
-        ctx += "AI flags:\n"
-        for a in ai_logs:
-            ctx += f"  {mask_ip(str(a.get('ip','')))} user={a.get('username','')} score={a.get('score','')} flagged={a.get('flagged','')}\n"
-        ctx += f"Blacklisted: {bl_count} | Whitelisted: {wl_count}\n"
-        _ctx_cache['data'] = ctx
-        _ctx_cache['ts']   = now
-        return ctx
-    except Exception as e:
-        return _ctx_cache['data'] or f"(context error: {e})"
 
 GUARD_SYSTEM_PROMPT = """You are NETAD Guard — AI security officer of the NETAD multi-layer camera security system. Built by a 7-person team in the Philippines.
 
@@ -799,6 +608,8 @@ def api_chat():
                 result = _run_tool(tc.function.name, args)
                 actions.append({'tool': tc.function.name, 'args': args, 'result': result})
                 messages.append({'role': 'tool', 'tool_call_id': tc.id, 'content': result})
+                # Invalidate context cache after tool actions that modify state
+                with _ctx_lock: _ctx_cache['ts'] = 0
             fu    = client.chat.completions.create(model='llama-3.3-70b-versatile', messages=messages, max_tokens=512, temperature=0.3)
             reply = fu.choices[0].message.content.strip()
         else:
@@ -908,6 +719,112 @@ def api_device_delete():
     delete_device(request.get_json()['device_id'])
     return jsonify({'success': True})
 
+@app.route('/api/node-status')
+def node_status():
+    try:
+        with get_db() as conn: conn.cursor().execute('SELECT 1')
+        db_ok = True
+    except Exception: db_ok = False
+    return jsonify({'password': db_ok, 'timestamp': True, 'ip_whitelist': db_ok, 'digital_sig': True, 'session_token': db_ok, 'rate_limit': db_ok})
+
+@app.route('/api/logs')
+def api_logs():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_logs_today(50)])
+
+@app.route('/api/blacklist')
+def api_blacklist():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    result = []
+    for b in get_blacklist():
+        row = dict(b)
+        if row.get('blocked_until'): row['blocked_until'] = str(row['blocked_until'])
+        result.append(row)
+    return jsonify(result)
+
+@app.route('/api/blacklist/add', methods=['POST'])
+def api_blacklist_add():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    d = request.get_json()
+    add_to_blacklist(d['ip'], d.get('type', 'temporary'))
+    return jsonify({'success': True})
+
+@app.route('/api/blacklist/forgive', methods=['POST'])
+def api_blacklist_forgive():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    ip = request.get_json()['ip']
+    forgive_ip(ip); clear_rate_limit(ip); log_admin('forgive_ip', ip)
+    return jsonify({'success': True})
+
+@app.route('/api/clear-rate-limit', methods=['POST'])
+def api_clear_rate_limit():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    ip = request.get_json().get('ip', '')
+    if not ip: return jsonify({'error': 'missing ip'}), 400
+    clear_rate_limit(ip)
+    socketio.emit('guard_action', {'action': 'clear_rate_limit', 'ip': ip})
+    return jsonify({'success': True})
+
+@app.route('/api/whitelist')
+def api_whitelist():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    return jsonify([dict(w) for w in get_whitelist()])
+
+@app.route('/api/whitelist/add', methods=['POST'])
+def api_whitelist_add():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    d = request.get_json()
+    add_to_whitelist(d['ip'], d.get('label', 'New device'))
+    return jsonify({'success': True})
+
+@app.route('/api/whitelist/remove', methods=['POST'])
+def api_whitelist_remove():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    remove_from_whitelist(request.get_json()['ip'])
+    return jsonify({'success': True})
+
+@app.route('/api/sessions')
+def api_sessions():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    result = []
+    for s in get_sessions():
+        row = dict(s)
+        if row.get('last_seen'): row['last_seen'] = str(row['last_seen'])
+        if row.get('created_at'): row['created_at'] = str(row['created_at'])
+        result.append(row)
+    return jsonify(result)
+
+@app.route('/api/sessions/kick', methods=['POST'])
+def api_sessions_kick():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    d = request.get_json()
+    delete_session(d['username'])
+    socketio.emit('session_kicked', {'username': d['username']})
+    log_admin('kick_session', d['username'])
+    return jsonify({'success': True})
+
+@app.route('/api/session/heartbeat', methods=['POST'])
+def api_session_heartbeat():
+    d         = request.get_json()
+    username  = d.get('username', '')
+    client_ip = request.remote_addr
+    if is_blacklisted(client_ip):
+        session.clear(); set_consensus_state(False)
+        delete_session(username)
+        socketio.emit('session_kicked', {'username': username, 'reason': 'ip_blacklisted'})
+        return jsonify({'ok': False, 'kicked': True, 'reason': 'ip_blacklisted'})
+    update_session_heartbeat(username)
+    still_valid = any(s['username'] == username for s in get_sessions())
+    if not still_valid:
+        session.clear(); set_consensus_state(False)
+        return jsonify({'ok': False, 'kicked': True})
+    return jsonify({'ok': True})
+
+@app.route('/api/ai-logs')
+def api_ai_logs():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_ai_logs(20)])
+
 @app.route('/api/users')
 def api_get_users():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
@@ -935,6 +852,8 @@ def api_add_user():
                         (username, hashed, role, username))
             if cur.rowcount == 0: return jsonify({'error': 'username already exists'}), 409
         log_admin('add_user', username)
+        # Invalidate user cache so new user is picked up immediately
+        with _valid_users_lock: _valid_users_cache['ts'] = 0
         return jsonify({'success': True})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
