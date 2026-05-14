@@ -44,7 +44,17 @@ def verify_password(username, password):
     return stored == hashlib.sha256(password.encode()).hexdigest()
 
 # ── WHITELIST ──
+def normalize_ip(ip: str) -> str:
+    """Normalize IP — strips IPv6-mapped IPv4 prefix and zone IDs."""
+    if not ip: return ip
+    ip = ip.strip()
+    if ip.startswith('::ffff:'): ip = ip[7:]   # ::ffff:1.2.3.4 → 1.2.3.4
+    if ip.startswith('::FFFF:'): ip = ip[7:]
+    if '%' in ip: ip = ip.split('%')[0]         # zone ID removal
+    return ip
+
 def is_whitelisted(ip):
+    ip = normalize_ip(ip)
     with get_db() as conn:
         cur = get_cursor(conn)
         cur.execute("SELECT id FROM whitelist WHERE ip = %s", (ip,))
@@ -57,6 +67,7 @@ def get_whitelist():
         return cur.fetchall()
 
 def add_to_whitelist(ip, label='Unknown device'):
+    ip = normalize_ip(ip)
     with get_db() as conn:
         cur = get_cursor(conn)
         cur.execute(
@@ -71,6 +82,7 @@ def remove_from_whitelist(ip):
 
 # ── BLACKLIST ──
 def is_blacklisted(ip):
+    ip = normalize_ip(ip)
     with get_db() as conn:
         cur = get_cursor(conn)
         cur.execute(

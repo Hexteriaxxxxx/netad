@@ -15,7 +15,7 @@ from database import (
     approve_device, reject_device, delete_device, get_pending_devices,
     is_whitelisted, is_blacklisted, get_all_failed_count,
     claim_token, get_device_public_key, clear_rate_limit,
-    get_db
+    get_db, normalize_ip
 )
 from dotenv import load_dotenv
 import os, threading, time, secrets, json, base64, re, datetime
@@ -665,7 +665,7 @@ def login():
     password      = data.get('password', '')[:128]
     csrf_token    = data.get('csrf_token', '')[:128]
     session_token = data.get('session_token', '')[:128] or secrets.token_hex(32)
-    client_ip     = request.remote_addr
+    client_ip     = normalize_ip(request.remote_addr or '')
     user_agent    = request.headers.get('User-Agent', '')
     data['_raw_username'] = data.get('username', '')
     data['_raw_password'] = data.get('password', '')
@@ -714,6 +714,21 @@ def login():
         socketio.emit('camera_access', {'accessible': True, 'reason': '6/6 consensus granted'})
     socketio.emit('login_attempt', {'username': username, 'ip': client_ip, 'result': result, 'votes': votes})
     return jsonify({'granted': granted, 'user': username, 'error': '' if granted else 'authentication failed', 'steps': steps, 'votes': votes})
+
+@app.route('/api/my-ip')
+def api_my_ip():
+    """Debug endpoint — returns the IP Railway detects for your device.
+    Compare this with your whitelisted IP to diagnose Node 3 issues."""
+    raw = request.remote_addr
+    normalized = normalize_ip(raw or '')
+    whitelisted = is_whitelisted(normalized)
+    return jsonify({
+        'raw_ip': raw,
+        'normalized_ip': normalized,
+        'whitelisted': whitelisted,
+        'x_forwarded_for': request.headers.get('X-Forwarded-For', 'not set'),
+        'x_real_ip': request.headers.get('X-Real-IP', 'not set')
+    })
 
 @app.route('/api/node-status')
 def node_status():
