@@ -354,8 +354,16 @@ def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed
             threats.append({'type': 'ATTACK_TOOL', 'description': f'Attack tool UA: {user_agent[:80]}', 'severity': 'HIGH', 'score': -0.8})
             break
 
-    # 3. Unknown username
-    VALID = {'admin', 'kevin', 'josiah', 'jm', 'karl', 'nico', 'lj'}
+    # 3. Unknown username — live DB lookup, not hardcoded set
+    # This handles users added via the Users tab without redeployment
+    try:
+        from database import get_cursor as _gc
+        with get_db() as conn:
+            cur = _gc(conn)
+            cur.execute("SELECT username FROM users")
+            VALID = {row['username'] for row in cur.fetchall()}
+    except Exception:
+        VALID = {'admin', 'kevin', 'josiah', 'jm', 'karl', 'nico', 'lj'}  # fallback only if DB is down
     if username and username not in VALID:
         threats.append({'type': 'UNKNOWN_USERNAME', 'description': f'Unknown username: "{username}"', 'severity': 'MEDIUM', 'score': -0.5})
 
