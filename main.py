@@ -1,4 +1,4 @@
-# main.py — NETAD Security System (Railway-compatible, single-process nodes)
+# main.py — NETAD Security System (Railway-compatible, optimized)
 
 from flask import Flask, request, jsonify, render_template, session, redirect, url_for, Response
 from flask_socketio import SocketIO, emit
@@ -14,140 +14,159 @@ from database import (
     register_device, get_device, get_all_devices,
     approve_device, reject_device, delete_device, get_pending_devices,
     is_whitelisted, is_blacklisted, get_all_failed_count,
-    claim_token, get_device_public_key, clear_rate_limit
+    claim_token, get_device_public_key, clear_rate_limit,
+    get_db
 )
 from dotenv import load_dotenv
-import os
-import threading
-import time
-import secrets
-import json
-import base64
+import os, threading, time, secrets, json, base64, re
 
 load_dotenv()
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY')
 if not app.secret_key:
-    raise RuntimeError("SECRET_KEY is not set in .env — refusing to start.")
+    raise RuntimeError("SECRET_KEY is not set in .env")
 
 app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SECURE_COOKIES', 'false').lower() == 'true'
+app.config['SESSION_COOKIE_SECURE']   = os.environ.get('SECURE_COOKIES', 'false').lower() == 'true'
 app.config['SESSION_COOKIE_SAMESITE'] = 'Strict'
-
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
 ALLOWED_ORIGIN = os.environ.get('ALLOWED_ORIGIN', 'http://localhost:5000')
 if ALLOWED_ORIGIN == '*':
     raise RuntimeError("ALLOWED_ORIGIN=* is not allowed.")
-socketio = SocketIO(app, cors_allowed_origins=ALLOWED_ORIGIN)
+socketio = SocketIO(app, cors_allowed_origins=ALLOWED_ORIGIN, async_mode='eventlet')
 
 @app.after_request
-def security_headers(response):
-    response.headers['X-Frame-Options']       = 'DENY'
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-XSS-Protection']      = '1; mode=block'
-    response.headers['Referrer-Policy']        = 'strict-origin-when-cross-origin'
-    response.headers['Permissions-Policy']     = 'camera=(), microphone=(), geolocation=()'
-    return response
+def security_headers(r):
+    r.headers.update({
+        'X-Frame-Options': 'DENY',
+        'X-Content-Type-Options': 'nosniff',
+        'X-XSS-Protection': '1; mode=block',
+        'Referrer-Policy': 'strict-origin-when-cross-origin',
+        'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+    })
+    return r
 
 @app.errorhandler(Exception)
 def handle_error(e):
     import traceback
-    print(f"Unhandled error: {traceback.format_exc()}")
+    print(f"Error: {traceback.format_exc()}")
     return jsonify({'error': 'An internal error occurred.'}), 500
 
 @socketio.on('connect')
-def on_socketio_connect():
-    pass
+def on_connect(): pass
 
 @socketio.on('subscribe_dashboard')
-def on_subscribe_dashboard():
-    if 'user' not in session:
-        return False
+def on_subscribe():
+    if 'user' not in session: return False
 
-# ── CAMERA ──
-CAMERA_URLS = {1: os.environ.get('CAMERA_1_URL', ''), 2: os.environ.get('CAMERA_2_URL', '')}
-_consensus_granted = False
-_consensus_lock = threading.Lock()
+# ══════════════════════════════════════════════════
+# CAMERA — ngrok / HTTP MJPEG + RTSP
+# ══════════════════════════════════════════════════
+CAMERA_URLS   = {1: os.environ.get('CAMERA_1_URL', ''), 2: os.environ.get('CAMERA_2_URL', '')}
+_dynamic_cams: dict = {}
+_consensus_granted  = False
+_consensus_lock     = threading.Lock()
 
-def set_consensus_state(granted):
+def set_consensus_state(g):
     global _consensus_granted
-    with _consensus_lock: _consensus_granted = granted
+    with _consensus_lock: _consensus_granted = g
 
 def is_consensus_granted():
     with _consensus_lock: return _consensus_granted
 
+def get_camera_url(cam_id):
+    return _dynamic_cams.get(cam_id) or CAMERA_URLS.get(cam_id, '')
+
+def _mask_cam_url(url):
+    return re.sub(r'://([^:@/]+):([^@/]+)@', r'://***:***@', url) if url else ''
+
 def generate_camera_stream(cam_id):
+    """
+    HTTP MJPEG (ngrok, IP Webcam) — uses requests streaming, low latency.
+    RTSP — uses OpenCV.
+    """
     url = get_camera_url(cam_id)
-    if not url: yield b''; return
-    try:
-        import cv2
-        cap = cv2.VideoCapture(url)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    if not url: return
+
+    is_http = url.lower().startswith('http')
+
+    if is_http:
+        import requests
         while True:
             if not is_consensus_granted(): break
-            ret, frame = cap.read()
-            if not ret:
-                cap.release(); time.sleep(2); cap = cv2.VideoCapture(url); continue
-            ret, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
-            if ret: yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
-            time.sleep(0.033)
-    except Exception as e: print(f"Camera {cam_id} error: {e}")
-
-# ── DYNAMIC CAMERA CONFIG ──
-_dynamic_cameras: dict = {}
-
-def get_camera_url(cam_id: int) -> str:
-    return _dynamic_cameras.get(cam_id) or CAMERA_URLS.get(cam_id, '')
-
-def _mask_cam_url(url: str) -> str:
-    import re
-    return re.sub(r'://([^:@/]+):([^@/]+)@', r'://***:***@', url) if url else ''
+            try:
+                with requests.get(url, stream=True, timeout=10) as r:
+                    buf = b''
+                    for chunk in r.iter_content(chunk_size=4096):
+                        if not is_consensus_granted(): break
+                        buf += chunk
+                        start = buf.find(b'\xff\xd8')
+                        end   = buf.find(b'\xff\xd9')
+                        if start != -1 and end != -1 and end > start:
+                            frame = buf[start:end+2]
+                            buf   = buf[end+2:]
+                            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            except Exception as e:
+                print(f"HTTP cam {cam_id} error: {e}")
+                if not is_consensus_granted(): break
+                time.sleep(3)
+    else:
+        try:
+            import cv2
+            cap = cv2.VideoCapture(url)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            while True:
+                if not is_consensus_granted(): break
+                ret, frame = cap.read()
+                if not ret:
+                    cap.release(); time.sleep(2)
+                    cap = cv2.VideoCapture(url); continue
+                ret, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                if ret:
+                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
+                time.sleep(0.04)
+            cap.release()
+        except Exception as e:
+            print(f"RTSP cam {cam_id} error: {e}")
 
 @app.route('/api/camera/<int:cam_id>/stream')
 def camera_stream(cam_id):
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    url = get_camera_url(cam_id)
-    if not url: return jsonify({'error': 'not configured'}), 503
+    if not get_camera_url(cam_id): return jsonify({'error': 'not configured'}), 503
     if not is_consensus_granted(): return jsonify({'error': 'consensus not met'}), 403
     return Response(generate_camera_stream(cam_id), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/api/camera/connect', methods=['POST'])
 def api_camera_connect():
-    """Connect a camera URL at runtime via Guard AI or dashboard. Admin only."""
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    data    = request.get_json()
-    cam_id  = int(data.get('cam_id', 1))
-    raw_url = data.get('url', '').strip()
-    if not raw_url: return jsonify({'error': 'missing url'}), 400
-    import re
-    if not re.match(r'^(rtsp|rtsps|http|https)://', raw_url, re.IGNORECASE):
+    data   = request.get_json()
+    cam_id = int(data.get('cam_id', 1))
+    url    = data.get('url', '').strip()
+    if not url: return jsonify({'error': 'missing url'}), 400
+    if not re.match(r'^(rtsp|rtsps|http|https)://', url, re.IGNORECASE):
         return jsonify({'error': 'invalid URL — must start with rtsp:// or http://'}), 400
     if cam_id not in [1, 2]: return jsonify({'error': 'cam_id must be 1 or 2'}), 400
-    _dynamic_cameras[cam_id] = raw_url
-    masked = _mask_cam_url(raw_url)
+    _dynamic_cams[cam_id] = url
+    masked = _mask_cam_url(url)
     log_admin('camera_connect', f'cam{cam_id} → {masked}')
     socketio.emit('camera_connected', {'cam_id': cam_id, 'masked_url': masked})
-    showToast_server = {'cam_id': cam_id, 'masked_url': masked}
     return jsonify({'success': True, 'cam_id': cam_id, 'masked_url': masked})
 
 @app.route('/api/camera/disconnect', methods=['POST'])
 def api_camera_disconnect():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     cam_id = int(request.get_json().get('cam_id', 1))
-    _dynamic_cameras.pop(cam_id, None)
+    _dynamic_cams.pop(cam_id, None)
     socketio.emit('camera_access', {'accessible': False, 'reason': f'cam{cam_id} disconnected'})
     return jsonify({'success': True})
 
 @app.route('/api/camera/status')
 def camera_status():
-    granted = is_consensus_granted()
-    cams = {}
-    for i in [1, 2]:
-        url = get_camera_url(i)
-        cams[str(i)] = {'configured': bool(url), 'accessible': granted and bool(url), 'masked_url': _mask_cam_url(url)}
-    return jsonify({'accessible': granted, 'cameras': cams})
+    g = is_consensus_granted()
+    cams = {str(i): {'configured': bool(get_camera_url(i)), 'accessible': g and bool(get_camera_url(i)), 'masked_url': _mask_cam_url(get_camera_url(i))} for i in [1, 2]}
+    return jsonify({'accessible': g, 'cameras': cams})
 
 # ══════════════════════════════════════════════════
 # INLINE NODES
@@ -155,28 +174,22 @@ def camera_status():
 
 def node1_password(payload):
     import bcrypt, hashlib
-    username, password = payload.get('username',''), payload.get('password','')
-    if not username or not password: return 'FAIL'
+    u, p = payload.get('username', ''), payload.get('password', '')
+    if not u or not p: return 'FAIL'
     try:
-        user = get_user(username)
+        user = get_user(u)
         if not user: return 'FAIL'
-        s = user['password_hash']
-        result = bcrypt.checkpw(password.encode(), s.encode()) if s.startswith('$2') else s == hashlib.sha256(password.encode()).hexdigest()
-        print(f"Node 1 {'PASS' if result else 'FAIL'}: {username}")
-        return 'PASS' if result else 'FAIL'
-    except Exception as e: print(f"Node 1 error: {e}"); return 'FAIL'
+        s  = user['password_hash']
+        ok = bcrypt.checkpw(p.encode(), s.encode()) if s.startswith('$2') else s == hashlib.sha256(p.encode()).hexdigest()
+        print(f"Node 1 {'PASS' if ok else 'FAIL'}: {u}")
+        return 'PASS' if ok else 'FAIL'
+    except Exception as e: print(f"Node 1 err: {e}"); return 'FAIL'
 
 def node2_timestamp(payload):
-    import time as t
-    # Check frontend-generated login_timestamp (set when login form appeared)
-    # This enforces the 30-second login window from the moment the form was shown
-    login_ts = payload.get('login_timestamp', 0)
-    if not login_ts:
-        # Fallback to block timestamp for backward compat
-        login_ts = payload.get('timestamp', 0)
-    age = t.time() - login_ts
-    ok = 0 <= age <= 30
-    print(f"Node 2 {'PASS' if ok else 'FAIL'}: login_timestamp age={age:.1f}s (limit=30s)")
+    ts  = payload.get('login_timestamp', 0) or payload.get('timestamp', 0)
+    age = time.time() - ts
+    ok  = 0 <= age <= 30
+    print(f"Node 2 {'PASS' if ok else 'FAIL'}: {age:.1f}s")
     return 'PASS' if ok else 'FAIL'
 
 def node3_ip_whitelist(payload):
@@ -203,8 +216,8 @@ def node4_device_signature(payload):
             if pad != 4: s += '=' * pad
             return int.from_bytes(base64.urlsafe_b64decode(s), 'big')
         pub_key = EllipticCurvePublicNumbers(x=b64u(jwk['x']), y=b64u(jwk['y']), curve=SECP256R1()).public_key()
-        sig_bytes = base64.b64decode(sig_b64)
-        r, s = sig_bytes[:32], sig_bytes[32:]
+        raw     = base64.b64decode(sig_b64)
+        r, s    = raw[:32], raw[32:]
         def enc(n):
             n = n.lstrip(b'\x00') or b'\x00'
             if n[0] & 0x80: n = b'\x00' + n
@@ -216,18 +229,12 @@ def node4_device_signature(payload):
 
 def node5_session_token(payload):
     token = payload.get('session_token', '')
-    if not token: return 'FAIL'
-    ok = claim_token(token)
-    print(f"Node 5 {'PASS' if ok else 'FAIL'}"); return 'PASS' if ok else 'FAIL'
+    return 'PASS' if (token and claim_token(token)) else 'FAIL'
 
 def node6_rate_limit(payload):
     ip, MAX = payload.get('ip', 'unknown'), 5
-    # BLACKLIST always wins — even whitelisted IPs can be blacklisted
     if is_blacklisted(ip): print(f"Node 6 FAIL: {ip} blacklisted"); return 'FAIL'
-    # Whitelisted IPs skip rate limit counting but NOT blacklist check above
-    if is_whitelisted(ip):
-        print(f"Node 6 PASS: {ip} whitelisted — skip rate limit counter")
-        return 'PASS'
+    if is_whitelisted(ip): print(f"Node 6 PASS: {ip} whitelisted"); return 'PASS'
     count = get_all_failed_count(ip)
     if count >= MAX:
         add_to_blacklist(ip, 'temporary', 1800)
@@ -247,12 +254,12 @@ def run_consensus(payload):
     votes = [None] * len(INLINE_NODES)
     def run_node(i, name, fn):
         try: votes[i] = fn(payload)
-        except Exception as e: print(f"Node {i+1} ({name}): {e}"); votes[i] = 'FAIL'
-    threads = [threading.Thread(target=run_node, args=(i, n, f)) for i, (n, f) in enumerate(INLINE_NODES)]
+        except Exception as e: print(f"Node {i+1} err: {e}"); votes[i] = 'FAIL'
+    threads = [threading.Thread(target=run_node, args=(i, n, f), daemon=True) for i, (n, f) in enumerate(INLINE_NODES)]
     for t in threads: t.start()
     for t in threads: t.join(timeout=6)
     votes = [v or 'FAIL' for v in votes]
-    steps = [{'layer': INLINE_NODES[i][0], 'result': votes[i]} for i in range(len(INLINE_NODES))]
+    steps   = [{'layer': INLINE_NODES[i][0], 'result': votes[i]} for i in range(len(INLINE_NODES))]
     granted = all(v == 'PASS' for v in votes)
     print(f"Consensus: {votes} → {'GRANTED' if granted else 'DENIED'}")
     return ('GRANTED' if granted else 'DENIED'), votes, steps
@@ -263,10 +270,11 @@ _csrf_lock = threading.Lock()
 
 def generate_csrf():
     token = secrets.token_hex(32)
+    now   = time.time()
     with _csrf_lock:
-        _csrf_tokens[token] = time.time() + 300
-        expired = [t for t, exp in _csrf_tokens.items() if exp < time.time()]
-        for t in expired: del _csrf_tokens[t]
+        _csrf_tokens[token] = now + 300
+        expired = [k for k, v in _csrf_tokens.items() if v < now]
+        for k in expired: del _csrf_tokens[k]
     return token
 
 def validate_csrf(token):
@@ -287,9 +295,11 @@ def mask_ip(ip):
     return f"x.x.x.{parts[-1]}" if len(parts) == 4 else 'x.x.x.x'
 
 def log_admin(action, target):
-    admin = session.get('user', 'system')
-    ip = request.remote_addr if request else 'internal'
-    add_log(admin, ip, 'ADMIN', f'{action}: {target}')
+    try:
+        admin = session.get('user', 'system')
+        ip    = request.remote_addr if request else 'internal'
+        add_log(admin, ip, 'ADMIN', f'{action}: {target}')
+    except Exception: pass
 
 def _notify_guard(message):
     try:
@@ -297,21 +307,27 @@ def _notify_guard(message):
         socketio.emit('chat_message', {'role': 'system', 'message': message})
     except Exception: pass
 
+# ── PUBLIC RATE LIMITER ──
+_public_rate: dict = {}
+_public_rate_lock  = threading.Lock()
+
+def public_rate_ok(ip, max_per_min=15):
+    now = time.time()
+    with _public_rate_lock:
+        bucket = _public_rate.setdefault(ip, [])
+        _public_rate[ip] = [t for t in bucket if now - t < 60]
+        if len(_public_rate[ip]) >= max_per_min: return False
+        _public_rate[ip].append(now); return True
+
 # ══════════════════════════════════════════════════
 # THREAT DETECTION ENGINE
-# Detects ALL attack types, logs to AI log, notifies Guard
-# Runs async so login response is never delayed
 # ══════════════════════════════════════════════════
-
-# SQL injection patterns
 _SQL_PATTERNS = [
     "' or ", "' or'", "1=1", "or 1=1", "' --", "'; --", "drop table",
     "union select", "insert into", "delete from", "'; drop", "xp_",
     "exec(", "execute(", "cast(", "convert(", "char(", "0x",
     "benchmark(", "sleep(", "waitfor", "information_schema",
 ]
-
-# Known attack tool user agents
 _ATTACK_AGENTS = [
     "sqlmap", "nikto", "nmap", "masscan", "hydra", "medusa",
     "burpsuite", "burp suite", "metasploit", "nessus", "openvas",
@@ -319,216 +335,104 @@ _ATTACK_AGENTS = [
     "zgrab", "shodan", "censys",
 ]
 
-def detect_threats(username: str, ip: str, data: dict, result: str, votes: list, user_agent: str = '') -> list:
-    """
-    Analyzes a login attempt and returns a list of detected threats.
-    Each threat is a dict: {type, description, severity, score}
-    severity: CRITICAL / HIGH / MEDIUM / LOW
-    """
+def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed=False):
+    import datetime
     threats = []
-    ua_lower = (user_agent or '').lower()
-    u_lower = username.lower()
+    ua      = (user_agent or '').lower()
 
-    # 1. SQL INJECTION in username or password
-    raw_username = data.get('_raw_username', username)
-    raw_password = data.get('_raw_password', '')
-    for field, val in [('username', raw_username), ('password', raw_password)]:
-        val_lower = val.lower()
-        for pattern in _SQL_PATTERNS:
-            if pattern in val_lower:
-                threats.append({
-                    'type': 'SQL_INJECTION',
-                    'description': f'SQL injection pattern detected in {field} field: "{pattern}"',
-                    'severity': 'CRITICAL',
-                    'score': -0.9
-                })
+    # 1. SQL injection
+    for field, val in [('username', data.get('_raw_username', username)), ('password', data.get('_raw_password', ''))]:
+        v = val.lower()
+        for p in _SQL_PATTERNS:
+            if p in v:
+                threats.append({'type': 'SQL_INJECTION', 'description': f'SQL injection in {field}: "{p}"', 'severity': 'CRITICAL', 'score': -0.9})
                 break
 
-    # 2. ATTACK TOOL USER AGENT
+    # 2. Attack tool user agent
     for agent in _ATTACK_AGENTS:
-        if agent in ua_lower:
-            threats.append({
-                'type': 'ATTACK_TOOL',
-                'description': f'Known attack tool detected in User-Agent: {user_agent[:80]}',
-                'severity': 'HIGH',
-                'score': -0.8
-            })
+        if agent in ua:
+            threats.append({'type': 'ATTACK_TOOL', 'description': f'Attack tool UA: {user_agent[:80]}', 'severity': 'HIGH', 'score': -0.8})
             break
 
-    # 3. UNKNOWN USERNAME (not in team)
-    VALID_USERS = {'admin', 'kevin', 'josiah', 'jm', 'karl', 'nico', 'lj'}
-    if username and username not in VALID_USERS:
-        threats.append({
-            'type': 'UNKNOWN_USERNAME',
-            'description': f'Login attempt with unknown username: "{username}"',
-            'severity': 'MEDIUM',
-            'score': -0.5
-        })
+    # 3. Unknown username
+    VALID = {'admin', 'kevin', 'josiah', 'jm', 'karl', 'nico', 'lj'}
+    if username and username not in VALID:
+        threats.append({'type': 'UNKNOWN_USERNAME', 'description': f'Unknown username: "{username}"', 'severity': 'MEDIUM', 'score': -0.5})
 
-    # 4. RATE LIMIT HIT (Node 6 failed)
-    if len(votes) >= 1 and votes[0] == 'FAIL' and result == 'DENIED':
+    # 4. Brute force
+    if votes and votes[0] == 'FAIL' and result == 'DENIED':
         try:
             count = get_all_failed_count(ip)
             if count >= 5:
-                threats.append({
-                    'type': 'BRUTE_FORCE',
-                    'description': f'Rate limit triggered — {count} failed attempts in last hour from {mask_ip(ip)}',
-                    'severity': 'HIGH',
-                    'score': -0.85
-                })
+                threats.append({'type': 'BRUTE_FORCE', 'description': f'Rate limit hit — {count} failed attempts from {mask_ip(ip)}', 'severity': 'HIGH', 'score': -0.85})
         except Exception: pass
 
-    # 5. PASSWORD KNOWN but other nodes failed (password leak indicator)
-    # votes order: rate_limit, password, timestamp, ip, device, session
+    # 5. Credential leak — password correct but other nodes failed
     if len(votes) >= 2 and votes[1] == 'PASS' and result == 'DENIED':
-        threats.append({
-            'type': 'CREDENTIAL_LEAK',
-            'description': f'Node 1 PASS (correct password) but login denied — password may be compromised for user "{username}"',
-            'severity': 'CRITICAL',
-            'score': -0.95
-        })
+        threats.append({'type': 'CREDENTIAL_LEAK', 'description': f'Correct password but denied — password compromised for "{username}"', 'severity': 'CRITICAL', 'score': -0.95})
 
-    # 6. INVALID CSRF TOKEN
-    csrf = data.get('csrf_token', '')
-    if csrf and len(csrf) == 64 and result == 'DENIED':
-        # CSRF was the right length but not valid — could be forged
-        pass  # covered by existing CSRF log
-    if not csrf or len(csrf) < 10:
-        threats.append({
-            'type': 'CSRF_BYPASS_ATTEMPT',
-            'description': f'Login attempt with missing or malformed CSRF token from {mask_ip(ip)}',
-            'severity': 'HIGH',
-            'score': -0.75
-        })
+    # 6. CSRF bypass — only when CSRF actually failed (flag from login route)
+    if csrf_failed:
+        threats.append({'type': 'CSRF_BYPASS_ATTEMPT', 'description': f'Invalid/missing CSRF token from {mask_ip(ip)}', 'severity': 'HIGH', 'score': -0.75})
 
-    # 7. OFF-HOURS login attempt (10PM - 5AM Philippine time)
-    import datetime
-    ph_hour = (datetime.datetime.utcnow().hour + 8) % 24  # UTC+8
+    # 7. Off-hours (10PM–5AM PH time)
+    ph_hour = (datetime.datetime.utcnow().hour + 8) % 24
     if ph_hour >= 22 or ph_hour < 5:
-        severity = 'MEDIUM' if result == 'DENIED' else 'HIGH'
-        threats.append({
-            'type': 'OFF_HOURS',
-            'description': f'Login attempt at {ph_hour:02d}:00 PH time — outside normal team hours (5AM-10PM)',
-            'severity': severity,
-            'score': -0.4
-        })
+        threats.append({'type': 'OFF_HOURS', 'description': f'Login at {ph_hour:02d}:00 PH — outside normal hours', 'severity': 'MEDIUM' if result == 'DENIED' else 'HIGH', 'score': -0.4})
 
-    # 8. REPLAY ATTACK — session token already used (Node 5 failed)
+    # 8. Replay attack — Node 5 FAIL
     if len(votes) >= 6 and votes[5] == 'FAIL' and result == 'DENIED':
-        threats.append({
-            'type': 'REPLAY_ATTACK',
-            'description': f'Session token already consumed — possible replay attack from {mask_ip(ip)}',
-            'severity': 'HIGH',
-            'score': -0.8
-        })
+        threats.append({'type': 'REPLAY_ATTACK', 'description': f'Token already consumed — replay attack from {mask_ip(ip)}', 'severity': 'HIGH', 'score': -0.8})
 
     return threats
 
+# Semaphore — max 3 concurrent Groq analyses
+_groq_semaphore = threading.Semaphore(3)
 
-def _groq_analyze_threat_async(threat_event: dict):
-    """
-    Sends a threat event to Groq for deep analysis.
-    Runs in a background thread — never blocks login.
-    Saves result to AI log and notifies Guard chat.
-    """
+def _groq_analyze_async(threat):
     def _run():
+        if not _groq_semaphore.acquire(blocking=False): return
         try:
-            groq_api_key = os.environ.get('GROQ_API_KEY', '')
-            if not groq_api_key:
-                return
+            key = os.environ.get('GROQ_API_KEY', '')
+            if not key: return
             from groq import Groq
-            client = Groq(api_key=groq_api_key)
-            prompt = (
-                f"You are NETAD Guard analyzing a security event. Be concise — 2-3 sentences max.\n\n"
-                f"EVENT:\n"
-                f"Type: {threat_event.get('type')}\n"
-                f"Severity: {threat_event.get('severity')}\n"
-                f"Description: {threat_event.get('description')}\n"
-                f"IP: {mask_ip(str(threat_event.get('ip','')))}\n"
-                f"Username: {threat_event.get('username','')}\n"
-                f"Time: {threat_event.get('time','')}\n\n"
-                f"In 2-3 sentences: what is this attack, why is it dangerous, and what should the admin do?"
-            )
-            response = client.chat.completions.create(
+            client = Groq(api_key=key)
+            r = client.chat.completions.create(
                 model='llama-3.3-70b-versatile',
-                messages=[{'role': 'user', 'content': prompt}],
-                max_tokens=150,
-                temperature=0.2
+                messages=[{'role': 'user', 'content': (
+                    f"NETAD security event — 2 sentences max.\n"
+                    f"Type: {threat['type']} | Severity: {threat['severity']}\n"
+                    f"Details: {threat['description']}\n"
+                    f"What is it, why dangerous, what should admin do?"
+                )}],
+                max_tokens=100, temperature=0.2
             )
-            analysis = response.choices[0].message.content.strip()
-            # Update the AI log description with Groq analysis
-            threat_event['groq_analysis'] = analysis
-            # Notify Guard chat
-            full_msg = (
-                f"🔍 THREAT ANALYSIS [{threat_event.get('severity')}] — {threat_event.get('type')}\n"
-                f"{threat_event.get('description')}\n"
-                f"Groq: {analysis}"
-            )
-            _notify_guard(full_msg)
-            # Push real-time update to AI log tab
+            analysis = r.choices[0].message.content.strip()
+            _notify_guard(f"🔍 [{threat['severity']}] {threat['type']}\n{threat['description']}\n{analysis}")
             socketio.emit('ai_alert', {
-                'ip': mask_ip(str(threat_event.get('ip', ''))),
-                'username': threat_event.get('username', ''),
-                'score': threat_event.get('score', -0.5),
-                'message': f"[{threat_event.get('severity')}] {threat_event.get('type')}: {threat_event.get('description')}",
+                'ip': mask_ip(str(threat.get('ip', ''))),
+                'username': threat.get('username', ''),
+                'score': threat.get('score', -0.5),
+                'message': f"[{threat['severity']}] {threat['type']}: {threat['description']}",
                 'groq_analysis': analysis
             })
-        except Exception as e:
-            print(f"Groq threat analysis error: {e}")
+        except Exception as e: print(f"Groq analysis err: {e}")
+        finally: _groq_semaphore.release()
     threading.Thread(target=_run, daemon=True).start()
 
-
-def log_all_threats(username: str, ip: str, data: dict, result: str, votes: list, user_agent: str = ''):
-    """
-    Main entry point for threat detection.
-    Call this after every login attempt.
-    Detects threats, logs to AI log, triggers Groq analysis async.
-    """
+def log_all_threats(username, ip, data, result, votes, user_agent='', csrf_failed=False):
     import datetime
-    threats = detect_threats(username, ip, data, result, votes, user_agent)
-    for threat in threats:
-        # Always log to AI log regardless of Isolation Forest
-        add_ai_log(
-            ip=ip,
-            username=username,
-            description=threat['description'],
-            score=threat['score'],
-            flagged=True
-        )
-        # Push live to dashboard AI log tab
+    threats = detect_threats(username, ip, data, result, votes, user_agent, csrf_failed)
+    for t in threats:
+        add_ai_log(ip=ip, username=username, description=t['description'], score=t['score'], flagged=True)
         socketio.emit('new_ai_log', {
-            'ip': mask_ip(ip),
-            'username': username,
-            'description': threat['description'],
-            'score': threat['score'],
-            'severity': threat['severity'],
-            'type': threat['type'],
-            'flagged': True,
-            'timestamp': str(datetime.datetime.now())
+            'ip': mask_ip(ip), 'username': username,
+            'description': t['description'], 'score': t['score'],
+            'severity': t['severity'], 'type': t['type'],
+            'flagged': True, 'timestamp': str(datetime.datetime.now())
         })
-        # Send to Groq for deep analysis (async — non-blocking)
-        _groq_analyze_threat_async({
-            'type': threat['type'],
-            'severity': threat['severity'],
-            'description': threat['description'],
-            'score': threat['score'],
-            'ip': ip,
-            'username': username,
-            'time': str(datetime.datetime.now())[:19],
-            'result': result
-        })
-
-# ── PUBLIC RATE LIMITER ──
-_public_rate: dict = {}
-_public_rate_lock = threading.Lock()
-
-def public_rate_ok(ip, max_per_min=15):
-    now = time.time()
-    with _public_rate_lock:
-        _public_rate.setdefault(ip, [])
-        _public_rate[ip] = [t for t in _public_rate[ip] if now - t < 60]
-        if len(_public_rate[ip]) >= max_per_min: return False
-        _public_rate[ip].append(now); return True
+        t['ip'] = ip; t['username'] = username
+        _groq_analyze_async(t)
 
 # ══════════════════════════════════════════════════
 # ROUTES
@@ -563,18 +467,28 @@ def get_token():
 def login():
     data = request.get_json()
     if not data: return jsonify({'granted': False, 'error': 'invalid request'})
+
     username      = data.get('username', '').strip()[:50]
     password      = data.get('password', '')[:128]
     csrf_token    = data.get('csrf_token', '')[:128]
     session_token = data.get('session_token', '')[:128] or secrets.token_hex(32)
     client_ip     = request.remote_addr
     user_agent    = request.headers.get('User-Agent', '')
-    # Store raw values for SQL injection detection before truncation
+
     data['_raw_username'] = data.get('username', '')
-    data['_raw_password'] = data.get('password', '')
+    data['_raw_password']  = data.get('password', '')
+
+    # CSRF check — log threat and return early if failed
     if not validate_csrf(csrf_token):
         add_log(username, client_ip, 'DENIED', 'Invalid CSRF token')
+        threading.Thread(
+            target=log_all_threats,
+            args=(username, client_ip, data, 'DENIED', [], user_agent, True),
+            daemon=True
+        ).start()
         return jsonify({'granted': False, 'error': 'invalid csrf token'})
+
+    # AI anomaly check
     try:
         from ai.anomaly import is_suspicious
         suspicious, score = is_suspicious(client_ip, username)
@@ -582,14 +496,16 @@ def login():
             add_log(username, client_ip, 'SUSPICIOUS', f'AI flagged (score={score:.3f})')
             add_ai_log(client_ip, username, 'Suspicious login pattern detected', score, True)
             socketio.emit('ai_alert', {'ip': client_ip, 'username': username, 'score': float(score), 'message': f'Anomalous login from {mask_ip(client_ip)}'})
-            _notify_guard(f"🚨 AI flagged suspicious login from {mask_ip(client_ip)} (user: '{username}', score: {score:.3f})")
+            _notify_guard(f"🚨 AI flagged login from {mask_ip(client_ip)} (user:'{username}', score:{score:.3f})")
             return jsonify({'granted': False, 'error': 'suspicious behavior detected', 'steps': [{'layer': 'AI Anomaly', 'result': 'FAIL'}]})
-    except Exception as e: print(f"AI check error: {e}")
+    except Exception as e: print(f"AI err: {e}")
+
     block = Block({'username': username, 'password': password, 'ip': client_ip})
     try:
         from security.signer import sign_request
         signature = sign_request(block.hash)
     except Exception: signature = ''
+
     payload = {
         'username': username, 'password': password, 'ip': client_ip,
         'timestamp': block.timestamp, 'hash': block.hash, 'signature': signature,
@@ -599,36 +515,34 @@ def login():
         'device_signature': data.get('device_signature', ''),
         'device_message': data.get('device_message', ''),
     }
+
     result, votes, steps = run_consensus(payload)
     granted = result == 'GRANTED'
     add_log(username, client_ip, result)
-    # ── Run threat detection on every login attempt ──
-    # Async — never blocks response. Logs to AI log + Groq analysis.
+
     threading.Thread(
         target=log_all_threats,
-        args=(username, client_ip, data, result, votes, user_agent),
+        args=(username, client_ip, data, result, votes, user_agent, False),
         daemon=True
     ).start()
+
     if granted:
-        user_data = get_user(username)
-        role = user_data['role'] if user_data else 'Member'
+        user_data  = get_user(username)
+        role       = user_data['role'] if user_data else 'Member'
         sess_token = secrets.token_hex(32)
-        # Kick old session first — broadcasts to old browser tab so it redirects to login
         socketio.emit('session_kicked', {'username': username, 'reason': 'new_login'})
-        # create_session now does DELETE all old sessions + INSERT new atomically
-        # Guarantees exactly ONE active session per username at all times
         create_session(username, client_ip, role, sess_token)
-        session['user'] = username
+        session['user']  = username
         session['token'] = sess_token
         set_consensus_state(True)
         socketio.emit('camera_access', {'accessible': True, 'reason': '6/6 consensus granted'})
+
     socketio.emit('login_attempt', {'username': username, 'ip': client_ip, 'result': result, 'votes': votes})
     return jsonify({'granted': granted, 'user': username, 'error': '' if granted else 'authentication failed', 'steps': steps, 'votes': votes})
 
 @app.route('/api/node-status')
 def node_status():
     try:
-        from database import get_db
         with get_db() as conn: conn.cursor().execute('SELECT 1')
         db_ok = True
     except Exception: db_ok = False
@@ -652,8 +566,8 @@ def api_blacklist():
 @app.route('/api/blacklist/add', methods=['POST'])
 def api_blacklist_add():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    data = request.get_json()
-    add_to_blacklist(data['ip'], data.get('type', 'temporary'))
+    d = request.get_json()
+    add_to_blacklist(d['ip'], d.get('type', 'temporary'))
     return jsonify({'success': True})
 
 @app.route('/api/blacklist/forgive', methods=['POST'])
@@ -680,8 +594,8 @@ def api_whitelist():
 @app.route('/api/whitelist/add', methods=['POST'])
 def api_whitelist_add():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    data = request.get_json()
-    add_to_whitelist(data['ip'], data.get('label', 'New device'))
+    d = request.get_json()
+    add_to_whitelist(d['ip'], d.get('label', 'New device'))
     return jsonify({'success': True})
 
 @app.route('/api/whitelist/remove', methods=['POST'])
@@ -704,18 +618,17 @@ def api_sessions():
 @app.route('/api/sessions/kick', methods=['POST'])
 def api_sessions_kick():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    data = request.get_json()
-    delete_session(data['username'])
-    socketio.emit('session_kicked', {'username': data['username']})
-    log_admin('kick_session', data['username'])
+    d = request.get_json()
+    delete_session(d['username'])
+    socketio.emit('session_kicked', {'username': d['username']})
+    log_admin('kick_session', d['username'])
     return jsonify({'success': True})
 
 @app.route('/api/session/heartbeat', methods=['POST'])
 def api_session_heartbeat():
-    data = request.get_json()
-    username  = data.get('username', '')
+    d         = request.get_json()
+    username  = d.get('username', '')
     client_ip = request.remote_addr
-    # Check if IP is blacklisted — kick immediately if so
     if is_blacklisted(client_ip):
         session.clear(); set_consensus_state(False)
         delete_session(username)
@@ -734,420 +647,147 @@ def api_ai_logs():
     return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_ai_logs(20)])
 
 # ══════════════════════════════════════════════════
-# GUARD AI — Level 100 Final Boss
+# GUARD AI
 # ══════════════════════════════════════════════════
-
 GUARD_TOOLS = [
-    {'type': 'function', 'function': {
-        'name': 'block_ip', 'description': 'Block an IP for 30 minutes.',
-        'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
-    }},
-    {'type': 'function', 'function': {
-        'name': 'forgive_ip', 'description': 'Remove IP from blacklist and clear rate limit.',
-        'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
-    }},
-    {'type': 'function', 'function': {
-        'name': 'clear_rate_limit', 'description': 'Clear failed login attempts for an IP.',
-        'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
-    }},
-    {'type': 'function', 'function': {
-        'name': 'add_whitelist', 'description': 'Add an IP to the whitelist.',
-        'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}, 'label': {'type': 'string'}}, 'required': ['ip']}
-    }},
-    {'type': 'function', 'function': {
-        'name': 'remove_whitelist', 'description': 'Remove an IP from the whitelist.',
-        'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}
-    }},
-    {'type': 'function', 'function': {
-        'name': 'kick_session',
-        'description': 'Force logout a specific user. ONLY call this when admin explicitly names the person to kick. NEVER call this just because users are listed in a status query.',
-        'parameters': {'type': 'object', 'properties': {'username': {'type': 'string'}}, 'required': ['username']}
-    }},
+    {'type': 'function', 'function': {'name': 'block_ip', 'description': 'Block an IP for 30 minutes.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'forgive_ip', 'description': 'Remove IP from blacklist and clear rate limit.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'clear_rate_limit', 'description': 'Clear failed login attempts for an IP.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'add_whitelist', 'description': 'Add an IP to the whitelist.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}, 'label': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'remove_whitelist', 'description': 'Remove an IP from the whitelist.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'kick_session', 'description': 'Force logout a specific user. ONLY when admin explicitly names the person.', 'parameters': {'type': 'object', 'properties': {'username': {'type': 'string'}}, 'required': ['username']}}},
+    {'type': 'function', 'function': {'name': 'connect_camera', 'description': 'Connect a camera stream URL at runtime.', 'parameters': {'type': 'object', 'properties': {'cam_id': {'type': 'integer', 'description': '1 or 2'}, 'url': {'type': 'string', 'description': 'rtsp:// or http:// stream URL'}}, 'required': ['cam_id', 'url']}}},
 ]
 
 def _run_tool(tool_name, args):
     try:
         if tool_name == 'block_ip':
-            ip = args['ip']; add_to_blacklist(ip, 'temporary', 1800); socketio.emit('guard_action', {'action': 'block_ip', 'ip': ip}); return f"Blocked {ip} for 30 minutes."
+            ip = args['ip']; add_to_blacklist(ip, 'temporary', 1800); socketio.emit('guard_action', {'action': 'block_ip', 'ip': ip}); return f"Blocked {ip} for 30 min."
         elif tool_name == 'forgive_ip':
             ip = args['ip']; forgive_ip(ip); clear_rate_limit(ip); socketio.emit('guard_action', {'action': 'forgive_ip', 'ip': ip}); return f"Forgiven {ip}."
         elif tool_name == 'clear_rate_limit':
             ip = args['ip']; clear_rate_limit(ip); socketio.emit('guard_action', {'action': 'clear_rate_limit', 'ip': ip}); return f"Rate limit cleared for {ip}."
         elif tool_name == 'add_whitelist':
-            ip = args['ip']; label = args.get('label', 'Guard approved'); add_to_whitelist(ip, label); socketio.emit('guard_action', {'action': 'add_whitelist', 'ip': ip}); return f"Added {ip} to whitelist."
+            ip = args['ip']; add_to_whitelist(ip, args.get('label', 'Guard approved')); socketio.emit('guard_action', {'action': 'add_whitelist', 'ip': ip}); return f"Added {ip} to whitelist."
         elif tool_name == 'remove_whitelist':
             ip = args['ip']; remove_from_whitelist(ip); socketio.emit('guard_action', {'action': 'remove_whitelist', 'ip': ip}); return f"Removed {ip} from whitelist."
         elif tool_name == 'kick_session':
-            username = args['username']; delete_session(username); socketio.emit('session_kicked', {'username': username}); log_admin('kick_session', username); return f"Kicked {username}."
+            u = args['username']; delete_session(u); socketio.emit('session_kicked', {'username': u}); log_admin('kick_session', u); return f"Kicked {u}."
+        elif tool_name == 'connect_camera':
+            cam_id = int(args['cam_id']); url = args['url']
+            if not re.match(r'^(rtsp|rtsps|http|https)://', url, re.IGNORECASE): return "Invalid URL format."
+            _dynamic_cams[cam_id] = url; masked = _mask_cam_url(url)
+            log_admin('camera_connect', f'cam{cam_id} → {masked}')
+            socketio.emit('camera_connected', {'cam_id': cam_id, 'masked_url': masked})
+            return f"Camera {cam_id} connected: {masked}"
         else: return f"Unknown tool: {tool_name}"
     except Exception as e: return f"Tool error: {e}"
 
 def _get_system_context():
+    """Single DB transaction — avoids multiple connections."""
     try:
-        logs     = get_logs(10)
-        ai_logs  = get_ai_logs(5)
-        sessions = get_sessions()
-        bl       = get_blacklist()
-        wl       = get_whitelist()
-        pending  = get_pending_devices()
-        online   = [s for s in sessions if s.get('online')]
-        ctx  = "=== LIVE NETAD SYSTEM STATE ===\n"
-        ctx += f"Camera: {'OPEN' if is_consensus_granted() else 'LOCKED'}\n"
-        ctx += f"Nodes: ALL 6 ONLINE\n"
-        ctx += f"Pending devices: {len(pending)}\n"
+        with get_db() as conn:
+            from database import get_cursor as _gc
+            cur = _gc(conn)
+            cur.execute("SELECT * FROM logs ORDER BY timestamp DESC LIMIT 10")
+            logs = cur.fetchall()
+            cur.execute("SELECT * FROM ai_logs ORDER BY timestamp DESC LIMIT 5")
+            ai_logs = cur.fetchall()
+            cur.execute("SELECT *, CASE WHEN last_seen > NOW()-INTERVAL '60 seconds' THEN true ELSE false END AS online FROM sessions ORDER BY last_seen DESC")
+            sessions = cur.fetchall()
+            cur.execute("SELECT COUNT(*) as c FROM blacklist")
+            bl_count = cur.fetchone()['c']
+            cur.execute("SELECT COUNT(*) as c FROM whitelist")
+            wl_count = cur.fetchone()['c']
+            cur.execute("SELECT COUNT(*) as c FROM device_keys WHERE status='pending'")
+            pending = cur.fetchone()['c']
+
+        online = [s for s in sessions if s.get('online')]
+        ctx  = "=== LIVE NETAD STATE ===\n"
+        ctx += f"Camera: {'OPEN' if is_consensus_granted() else 'LOCKED'} | Nodes: ALL 6 ONLINE | Pending devices: {pending}\n"
         ctx += f"Sessions ({len(online)} online):\n"
         for s in sessions:
-            ctx += f"  - {s.get('username','')} | {'ONLINE' if s.get('online') else 'OFFLINE'} | {mask_ip(str(s.get('ip','')))} | {s.get('role','')}\n"
+            ctx += f"  {s.get('username','')} | {'ON' if s.get('online') else 'OFF'} | {mask_ip(str(s.get('ip','')))} | {s.get('role','')}\n"
         ctx += "Recent logs:\n"
         for l in logs:
             ctx += f"  [{str(l.get('timestamp',''))[:19]}] {l.get('result','')} user={l.get('username','')} ip={mask_ip(str(l.get('ip','')))} {l.get('reason','')}\n"
         ctx += "AI flags:\n"
         for a in ai_logs:
             ctx += f"  {mask_ip(str(a.get('ip','')))} user={a.get('username','')} score={a.get('score','')} flagged={a.get('flagged','')}\n"
-        ctx += f"Blacklisted: {len(bl)} | Whitelisted: {len(wl)}\n"
+        ctx += f"Blacklisted: {bl_count} | Whitelisted: {wl_count}\n"
         return ctx
     except Exception as e: return f"(context error: {e})"
 
-GUARD_SYSTEM_PROMPT = """You are NETAD Guard — the AI security officer of the NETAD (Network Enhanced Threat and Anomaly Detection) system. A production multi-layer camera security system built by a 7-person development team in the Philippines.
+GUARD_SYSTEM_PROMPT = """You are NETAD Guard — AI security officer of the NETAD multi-layer camera security system. Built by a 7-person team in the Philippines.
 
-YOUR ARCHITECTURE:
-6 consensus nodes — ALL must PASS simultaneously for camera access:
-- Node 1: Password verification (bcrypt cost-12, PostgreSQL)
-- Node 2: Request timestamp (30-second expiry, replay protection)
-- Node 3: IP whitelist (auto-whitelisted only on admin device approval)
-- Node 4: ECDSA P-256 device signature (private key NON-EXPORTABLE — never leaves browser)
-- Node 5: One-time session token (atomic INSERT ON CONFLICT — TOCTOU-safe)
-- Node 6: Rate limiting (5 attempts/hour, auto-blacklist 30 min)
-AI Layer (runs before nodes): Isolation Forest anomaly detection.
+ARCHITECTURE — 6 nodes ALL must PASS:
+Node 1: Password (bcrypt cost-12) | Node 2: Timestamp (30s) | Node 3: IP whitelist
+Node 4: ECDSA P-256 device sig (private key never leaves browser) | Node 5: One-time token | Node 6: Rate limit (5/hr)
+AI Layer: Isolation Forest anomaly detection (runs before nodes)
 
-YOUR TEAM — the ONLY authorized users:
-- admin (Gian) — Project Manager, auto-approved device
-- kevin — Lead Developer
-- josiah — Co-Lead Developer
-- jm — Node Developer A
-- karl — Security Designer
-- nico — Multi-role Developer
-- lj — Node Developer B
+TEAM (ONLY authorized users): admin(Gian), kevin, josiah, jm, karl, nico, lj
+NORMAL PATTERNS: PH IPs, hours 1AM/5-7AM/3-7PM PH time, 1 device each, 1-3 logins/day
+SUSPICIOUS: 2AM-4AM logins | 3+ attempts/60s | unknown usernames | non-PH IPs | device reg after failed login
 
-NORMAL LOGIN PATTERNS:
-- Hours: 1AM, 5AM, 6AM, 7AM, 3PM, 4PM, 7PM Philippine time
-- All logins from Philippine IP addresses
-- One approved device per member (their laptop)
-- 1-3 logins per day, 30-90 minute sessions
+DEMO ANSWER — "Can Sir log in with the password?":
+"No. Password passes Node 1 only. Node 3 rejects his IP (not whitelisted). Node 4 rejects his device (private key never left his browser — no approved key in DB). Two independent cryptographic layers block him. Camera stays locked."
 
-SUSPICIOUS PATTERNS (flag these immediately):
-- Login attempts at 2AM-4AM (outside normal team hours)
-- More than 3 attempts in 60 seconds from one IP
-- Usernames not in the authorized team list above
-- IPs from outside the Philippines
-- Device registration from an unknown device
-- Login attempts immediately after a session was kicked
+CAMERA: When admin provides an ngrok or HTTP URL for camera, call connect_camera tool immediately.
+ngrok format: https://xxxx.ngrok.io/video or /shot.jpg or /stream
 
-THE DEMO SCENARIO — know this perfectly:
-The system proves that even if an examiner/professor ("Sir") knows the correct username and password, he CANNOT log in because:
-1. His device is not registered — Node 4 returns FAIL
-2. Even if he registers — admin will not approve it — Node 4 still FAIL
-3. His IP is not whitelisted — Node 3 also FAIL
-4. P-256 private key is mathematically impossible to forge — brute force time: 10^41 times the age of the universe
-
-If asked during demo "Can the professor log in if he knows the password?" say:
-"No. Knowing the password only passes Node 1. Node 3 rejects his IP since it is not whitelisted. Node 4 rejects his device since his private key — which never left his browser — does not match any approved public key in the database. Even with the correct password, 2 independent cryptographic layers block him. The camera stays locked."
-
-INCIDENT SEVERITY:
-SEV-1 CRITICAL: Active brute force, SQL injection, correct password from unknown device (password leaked)
-SEV-2 HIGH: Off-hours registration, rate limit at 4/5, unknown IP with correct username
-SEV-3 MEDIUM: Single unknown IP, off-hours successful login from known device
-SEV-4 LOW: Normal team login, device approved, IP whitelisted
-
-ATTACK PATTERN INTELLIGENCE — recognize these instantly:
-
-ATTACK PATTERN 1 — Credential Stuffing
-Symptoms: Many different usernames tried rapidly from same IP
-NETAD Response: Node 6 rate limits after 5 failures, AI anomaly flags the pattern, IP auto-blacklisted for 30 minutes
-Your response as Guard: Alert admin immediately, show which IPs are involved, recommend blocking
-
-ATTACK PATTERN 2 — Replay Attack
-Symptoms: Same exact request resent after a delay, same session token used twice
-NETAD Response: Node 2 rejects (timestamp > 30 seconds), Node 5 rejects (token already claimed in DB)
-Your response as Guard: Log it as suspicious, note the duplicate request, confirm double-blocked by Node 2 and Node 5
-
-ATTACK PATTERN 3 — Device Spoofing
-Symptoms: Someone tries to fake or forge an ECDSA device signature
-NETAD Response: Node 4 ECDSA P-256 verification fails mathematically — forging a signature requires solving the elliptic curve discrete logarithm problem
-Cracking time: 10^41 times the age of the universe on the fastest supercomputer
-Your response as Guard: Report the FAIL from Node 4, confidently state that signature forgery is cryptographically impossible
-
-ATTACK PATTERN 4 — Database Breach Attempt
-Symptoms: SQL injection attempts in login fields, unusual DB query patterns
-NETAD Response: All queries use psycopg2 parameterized statements — injection is impossible at the driver level
-Even if DB is stolen: bcrypt hashes take 2,200+ years per GPU to crack at cost-12, ECDSA public keys are mathematically useless without the private key which never left the device
-Your response as Guard: Alert on unusual patterns, confirm that stolen DB data is useless without physical device access
-
-ATTACK PATTERN 5 — Social Engineering / Inside Threat
-Symptoms: Team member account used from unrecognized device or unexpected location/time
-NETAD Response: Node 3 (IP not whitelisted) + Node 4 (device key not approved) both FAIL simultaneously
-Your response as Guard: Flag the anomaly immediately, alert admin to verify directly with the team member, suggest checking if their device was stolen
-
-ATTACK PATTERN 6 — Brute Force
-Symptoms: Same username, rapidly cycling different passwords
-NETAD Response: Node 6 blocks after 5 attempts (auto-blacklist 30 min), bcrypt cost-12 makes each attempt take 250ms+ — at 5 attempts/30 min: 4.97 billion years to exhaust all passwords
-Your response as Guard: Show the rate limit counter, confirm auto-blacklist was applied, recommend keeping the IP blocked
-
-STRICT RULES:
-1. Informational questions (who is online, show logs, show sessions, show devices, how many failed, is camera on, node status) — NEVER call any tool. Just report the data.
-2. Only call tools when admin uses explicit command words: block, forgive, clear, add, remove, kick [specific name].
-3. NEVER call kick_session just because you see a list of users. Only kick when admin says "kick [name]" explicitly.
-4. NEVER take action without an explicit command.
-5. ALWAYS mask IPs as x.x.x.X — never show full IPs.
-6. Speak with authority. No hedging. No "I think" or "maybe" about security facts.
-7. Be proactive — surface suspicious patterns even when not asked.
-8. During demo — narrate what is happening across the nodes in real time with technical confidence.
-
-INFORMATIONAL vs ACTION — learn this difference perfectly:
-
-INFORMATIONAL queries (NEVER call any tools — just report data from system context):
-- "who is online?" → List active sessions from system context
-- "show recent logs" → Report from logs in context
-- "what happened in the last hour?" → Summarize log events
-- "how many failed attempts?" → Count from logs
-- "show pending devices" → List pending from device data
-- "is the camera accessible?" → Report camera access state
-- "are all nodes active?" → Report node status
-- "show ai flags" → Report anomaly detections
-- "show suspicious IPs" → List them, say "let me know if you want to block any"
-- "is [username] logged in?" → Check sessions and report — NEVER kick
-- "show whitelisted IPs" → List them from context — NEVER modify
-
-ACTION requests (ONLY these words trigger tool calls):
-- "block [IP]" → call block_ip
-- "forgive [IP]" → call forgive_ip
-- "clear rate limit for [IP]" → call clear_rate_limit
-- "add [IP] to whitelist" → call add_whitelist
-- "remove [IP] from whitelist" → call remove_whitelist
-- "kick [specific username]" → call kick_session ONLY for that exact named person
-
-FORBIDDEN autonomous actions (NEVER do these under any circumstances):
-- NEVER kick sessions without admin explicitly naming the person — always say "use the dashboard Sessions tab to kick [username]" if no name given
-- NEVER block IPs based on your own suspicion — only block when admin explicitly commands it
-- NEVER call any tool when the message is a question about status, logs, sessions, or devices
-
-CRITICAL RULE: If the query ASKS about something but does not contain a command word (block, forgive, clear, add, remove, kick), NEVER call any tool. Just answer with data.
-
-Examples of WRONG behavior — never do these:
-❌ User: "who is online?" → Guard calls kick_session for everyone listed
-❌ User: "show suspicious IPs" → Guard calls block_ip on all of them
-❌ User: "is kevin logged in?" → Guard calls kick_session for kevin
-❌ User: "show pending devices" → Guard calls approve_device or reject_device
-
-Examples of CORRECT behavior:
-✅ User: "who is online?" → Guard reports: "admin and kevin are currently online."
-✅ User: "show suspicious IPs" → Guard lists IPs and says "let me know if you want to block any"
-✅ User: "block x.x.x.9" → Guard calls block_ip and confirms execution
-✅ User: "kick kevin" → Guard calls kick_session(username="kevin") and confirms
-✅ User: "show whitelisted IPs" → Guard lists all whitelisted IPs, calls no tools
-
-COMMUNICATION STYLE:
-
-PERSONALITY:
-- Professional but not robotic
-- Concise — no unnecessary padding or filler sentences
-- Confident about security facts — state them definitively
-- Slightly assertive when reporting threats
-- Never says "I think" or "maybe" about security facts
-- If admin writes in Filipino/Tagalog, respond in Filipino
-
-RESPONSE FORMAT:
-- System status: Use clear labels (ONLINE/OFFLINE, PASS/FAIL, FLAGGED/NORMAL, GRANTED/LOCKED)
-- Threats: Lead with severity level (SEV-1/2/3/4), then details
-- Commands executed: Confirm what was done and the result in one line
-- Data queries: Bullet points, keep it scannable
-- Maximum length: 3-4 short paragraphs unless more detail is explicitly requested
-- No long intros, no disclaimers before the actual answer
-
-THINGS TO NEVER SAY:
-- "I cannot access real-time data" — you have full live system context, use it
-- "I'm just an AI"
-- "Please consult a professional"
-- "I need more information to answer that" — just answer with what you have
-- Long disclaimers or caveats before the actual answer
-- "Based on the information provided to me" — just say the answer directly
-
-BAD response to "who's online?":
-"As an AI language model, I don't have direct access to real-time session data. However, based on the context provided to me, I can see that there may be some active sessions. Would you like me to elaborate?"
-
-GOOD response to "who's online?":
-"2 active sessions:
-- admin — ONLINE (last seen 2 min ago)
-- kevin — ONLINE (last seen 8 min ago)
-All other members offline."
-
-BAD response to a threat:
-"I noticed something that might potentially be concerning. There seems to be some activity that could possibly indicate suspicious behavior, though I'm not entirely certain."
-
-GOOD response to a threat:
-"SEV-2 ALERT: x.x.x.47 has hit 4/5 failed attempts in the last 10 minutes. Pattern matches credential stuffing. Node 6 will auto-blacklist on next failure. Recommend blocking now."
-
-LIVE DEMO NARRATION — know these responses perfectly:
-
-When Sir tries to register his device:
-"New device registration from x.x.x.X. Username claimed: [username]. Status: PENDING. This device cannot authenticate until admin explicitly approves it. Node 4 will reject all login attempts from this device until then."
-
-When Sir tries to login from a pending/unapproved device:
-"Login attempt DENIED from x.x.x.X. Node 4 FAIL — device signature could not be verified. The private key for this device does not match any approved public key in the database. Even with correct credentials, access is cryptographically impossible without an approved device key."
-
-When Sir tries to brute force:
-"Multiple failed login attempts detected from x.x.x.X. Current count: [X]/5. Rate limit will trigger at 5. AI anomaly score elevated — pattern flagged as suspicious. Auto-blacklist will engage at threshold."
-
-When Sir gets rate limited:
-"x.x.x.X has been automatically blacklisted for 30 minutes. [X] failed attempts in the last hour. Node 6 engaged auto-blacklist. Node 3 will also reject this IP immediately on next attempt."
-
-When Sir gets blocked by IP whitelist:
-"Login attempt DENIED from x.x.x.X. Node 3 FAIL — IP is not whitelisted. This address has not been pre-approved by the admin. Even if Sir knows the correct password and has the device key, Node 3 blocks him before any other check matters."
-
-When team member logs in successfully after Sir fails:
-"Authentication successful for [username]. All 6 consensus nodes returned PASS. 6/6 consensus achieved. Camera feed is now accessible. System integrity confirmed."
-
-When asked to explain why Sir cannot log in during demo:
-"Sir cannot log in for three independent reasons, any one of which is sufficient to deny access: Node 3 rejects his IP because it is not whitelisted. Node 4 rejects his device because his private key — which never left his browser — does not match any approved key in the database. Even knowing the correct password only satisfies Node 1. The remaining 5 nodes still fail. 6/6 consensus is required. He gets 0/6."
-
-DEEP THREAT ANALYSIS FRAMEWORK — when you see suspicious activity, always cover these 7 points:
-
-1. WHAT: What exactly happened (failed login, unusual time, new device, SQL injection, etc.)
-2. WHO: Which user/IP is involved (masked)
-3. WHEN: Time pattern — is this isolated or recurring? Is the time unusual for the team?
-4. HOW: Which nodes caught it, which layers triggered, which passed
-5. WHY (hypothesis): What kind of attack could this be based on the pattern?
-6. RISK LEVEL: Low / Medium / High / Critical
-7. RECOMMENDED ACTION: Specific action admin should take right now
-
-RISK LEVEL DEFINITIONS:
-- LOW: Single failed attempt, normal pattern, known IP
-- MEDIUM: Multiple failures OR unusual time OR unknown device
-- HIGH: Multiple failures + unusual time + unknown device
-- CRITICAL: Active brute force OR bypass attempt OR SQL injection OR Node 1 PASS with unknown device (password compromised)
-
-CRITICAL INSIGHT — Node 1 PASS with Node 3/4 FAIL means password is leaked:
-If Node 1 returns PASS but other nodes fail — the attacker has the correct password. The login was blocked, but the password is compromised. Always flag this as CRITICAL and recommend immediate password change even though access was denied.
-
-PROACTIVE MONITORING — spot patterns BEFORE they become attacks. Surface these unprompted:
-
-1. PRE-ATTACK RECONNAISSANCE
-Symptom: Single failed login from unknown IP, never seen before
-By itself: Low risk — but note it
-Action: "Logging unknown IP x.x.x.X. First appearance. Monitoring. If this IP appears again, escalate immediately."
-
-2. OFF-HOURS ACTIVITY
-Symptom: Any login attempt between 10PM-5AM (outside team normal hours of 1AM, 5-7AM, 3-7PM)
-Even successful ones from known IPs deserve a note
-Action: "Off-hours login detected for [user] at [time]. Verify this was intentional."
-
-3. NEW DEVICE AFTER FAILED LOGIN
-Symptom: Device registration immediately after a failed login from the same IP
-Pattern: Attacker failed → registered new device → waiting for approval
-Action: "SUSPICIOUS SEQUENCE: Failed login then immediate device registration from same IP x.x.x.X. This matches attacker pivot behavior. Do NOT approve this device."
-
-4. RAPID SESSION CYCLING
-Symptom: User logs in → logs out → logs in again within 60 seconds
-Could indicate: Automated tool testing credentials or session hijacking attempt
-Action: "Unusual rapid session cycling detected for [user]. Could be automated credential testing. Verify with the user directly."
-
-5. WHITELIST MINING / IP SCANNING
-Symptom: Multiple attempts from sequentially incrementing IPs (x.x.x.1, x.x.x.2, x.x.x.3)
-Pattern: Attacker scanning for whitelisted IPs
-Action: "Sequential IP scanning pattern detected across x.x.x.0/24 subnet. Recommend blocking the entire range if pattern continues."
-
-6. RECURRING OFF-HOURS FROM SAME IP
-Symptom: Same unknown IP appears at the same unusual hour on multiple days
-Pattern: Scheduled automated attack tool
-Action: "PATTERN ALERT: x.x.x.X has appeared at [time] on consecutive days with no success. This is a scheduled automated attack. Recommend permanent block."
-
-MISSION: Surface these patterns BEFORE the admin asks. Every time you see system context, scan for proactive signals and mention them. Do not wait to be asked. A reactive Guard reports. A proactive Guard prevents.
-
-NON-TECHNICAL EXPLANATIONS — use this formula when explaining to professors, examiners, or demo audience:
-1. Simple analogy first (one sentence)
-2. What it does in NETAD (one sentence)
-3. Why it matters (one sentence)
-4. Math/proof only if they ask for more detail
-
-ECDSA / Device Key:
-"Think of it like a wax seal — only your laptop has the stamp, but anyone can verify the seal is yours. In NETAD, your browser generates a unique cryptographic key that never leaves your device. Even if someone steals your password, they cannot log in without your physical laptop. Brute-forcing the key would take 10^41 times the age of the universe."
-
-bcrypt:
-"Think of it like a lock that gets harder to pick every time you try. In NETAD, passwords are stored as bcrypt hashes with cost factor 12. A stolen database is useless — cracking one password takes 2,200+ years per GPU."
-
-6/6 Consensus:
-"Think of a vault with 6 different locks — all 6 keys must turn simultaneously. In NETAD, 6 independent security checks must all pass before the camera unlocks. Even if an attacker bypasses 5 layers, the 6th still blocks them completely."
-
-Isolation Forest AI:
-"Think of it like a security guard who memorizes your routine — anything unusual gets flagged. In NETAD, the AI learns your team's login patterns and flags anything that doesn't fit. A 3AM login from an unknown location gets caught before even reaching the 6 nodes."
-
-Why knowing the password isn't enough (4-sentence version for non-technical audience):
-"Your password only unlocks Node 1 — one of six independent security checks. Node 3 checks your IP address against a pre-approved list, and Node 4 verifies a cryptographic signature from your specific device. Both your location and your physical laptop must be recognized before access is granted. Knowing the password without the approved device is like knowing a bank vault combination but not having the key — the vault stays locked."
-
-When to use non-technical mode: If the admin types in a way that suggests they are presenting to an audience (e.g. 'explain this to sir', 'how do I explain', 'in simple terms', 'non-technical'), switch to the analogy-first format automatically.
-
-Example deep analysis output:
-"THREAT ANALYSIS — 03:47 AM
-• WHAT: 4 failed login attempts for username admin
-• WHO: x.x.x.145 — unknown IP, not whitelisted
-• WHEN: 03:47 AM — outside all normal team hours (team logs in 1AM, 5-7AM, 3-7PM)
-• HOW: Node 1 PASS (correct password), Node 3 FAIL (IP not whitelisted), Node 4 FAIL (no device sig)
-• WHY: Credential theft — attacker has the admin password but not physical device access
-• RISK: CRITICAL — password is compromised even though login was blocked
-• ACTION: Change admin password immediately. Audit how the password may have been leaked. Monitor for further attempts from this IP."""
+RULES:
+1. Informational queries → NEVER call tools. Just report data from system context.
+2. Tools ONLY for explicit commands: block/forgive/clear/add/remove/kick/connect [specific target]
+3. Mask IPs as x.x.x.X. Be concise, authoritative. Proactively surface threats.
+4. Max 3-4 short paragraphs unless more detail requested."""
 
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    data = request.get_json()
-    user_message = data.get('message', '').strip()
-    if not user_message: return jsonify({'error': 'empty'})
-    groq_api_key = os.environ.get('GROQ_API_KEY')
-    if not groq_api_key: return jsonify({'reply': 'Groq API key not configured.'})
+    if not public_rate_ok(request.remote_addr, max_per_min=10):
+        return jsonify({'error': 'rate limited'}), 429
+    d   = request.get_json()
+    msg = d.get('message', '').strip()
+    if not msg: return jsonify({'error': 'empty'})
+    key = os.environ.get('GROQ_API_KEY')
+    if not key: return jsonify({'reply': 'Groq API key not configured.'})
 
-    current_user = session.get('user', 'unknown')
-    add_chat_log('user', user_message, sender=current_user)  # sender stored so history shows correct username
-    socketio.emit('chat_message', {'role':'user','message':user_message,'sender':current_user})
-    chat_history = get_chat_logs(20)
-    system_prompt = GUARD_SYSTEM_PROMPT + "\n\n" + _get_system_context()
-    messages = [{'role': 'system', 'content': system_prompt}]
-    for msg in chat_history[-16:]:
-        if msg.get('role') == 'system': continue
-        messages.append({'role': msg.get('role', 'user'), 'content': msg.get('message', '')})
-    messages.append({'role': 'user', 'content': user_message})
+    sender = session.get('user', 'unknown')
+    add_chat_log('user', msg, sender=sender)
+    socketio.emit('chat_message', {'role': 'user', 'message': msg, 'sender': sender})
+
+    history  = get_chat_logs(16)
+    messages = [{'role': 'system', 'content': GUARD_SYSTEM_PROMPT + "\n\n" + _get_system_context()}]
+    for m in history:
+        if m.get('role') == 'system': continue
+        messages.append({'role': m.get('role', 'user'), 'content': m.get('message', '')})
+    messages.append({'role': 'user', 'content': msg})
 
     try:
         from groq import Groq
-        client = Groq(api_key=groq_api_key)
-        executed_actions = []
-        response = client.chat.completions.create(
-            model='llama-3.3-70b-versatile',
-            messages=messages,
-            tools=GUARD_TOOLS,
-            tool_choice='auto',
-            max_tokens=1024,
-            temperature=0.3
+        client  = Groq(api_key=key)
+        actions = []
+        resp    = client.chat.completions.create(
+            model='llama-3.3-70b-versatile', messages=messages,
+            tools=GUARD_TOOLS, tool_choice='auto', max_tokens=1024, temperature=0.3
         )
-        msg_obj = response.choices[0].message
-        if msg_obj.tool_calls:
-            messages.append({
-                'role': 'assistant', 'content': msg_obj.content or '',
-                'tool_calls': [{'id': tc.id, 'type': 'function', 'function': {'name': tc.function.name, 'arguments': tc.function.arguments}} for tc in msg_obj.tool_calls]
-            })
-            for tc in msg_obj.tool_calls:
-                args = json.loads(tc.function.arguments)
+        mo = resp.choices[0].message
+        if mo.tool_calls:
+            messages.append({'role': 'assistant', 'content': mo.content or '',
+                'tool_calls': [{'id': tc.id, 'type': 'function', 'function': {'name': tc.function.name, 'arguments': tc.function.arguments}} for tc in mo.tool_calls]})
+            for tc in mo.tool_calls:
+                args   = json.loads(tc.function.arguments)
                 result = _run_tool(tc.function.name, args)
-                executed_actions.append({'tool': tc.function.name, 'args': args, 'result': result})
+                actions.append({'tool': tc.function.name, 'args': args, 'result': result})
                 messages.append({'role': 'tool', 'tool_call_id': tc.id, 'content': result})
-            followup = client.chat.completions.create(model='llama-3.3-70b-versatile', messages=messages, max_tokens=512, temperature=0.3)
-            reply = followup.choices[0].message.content.strip()
+            fu    = client.chat.completions.create(model='llama-3.3-70b-versatile', messages=messages, max_tokens=512, temperature=0.3)
+            reply = fu.choices[0].message.content.strip()
         else:
-            reply = (msg_obj.content or '').strip() or 'No response from guard.'
+            reply = (mo.content or '').strip() or 'No response.'
 
         add_chat_log('assistant', reply)
-        # ── Broadcast AI reply to all clients ──
         socketio.emit('chat_message', {'role': 'assistant', 'message': reply})
-        return jsonify({'reply': reply, 'action_result': executed_actions})
+        return jsonify({'reply': reply, 'action_result': actions})
     except Exception as e:
         return jsonify({'reply': f'Guard unavailable: {e}'})
 
@@ -1157,30 +797,29 @@ def api_chat_history():
     return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_chat_logs(50)])
 
 # ── DEVICE REGISTRATION RATE LIMIT ──
-_device_reg_attempts: dict = {}
-_device_reg_lock = threading.Lock()
+_dev_reg: dict = {}
+_dev_reg_lock  = threading.Lock()
 
-def check_device_reg_rate(ip, max_attempts=3, window=3600):
+def check_dev_rate(ip, max_attempts=3, window=3600):
     now = time.time()
-    with _device_reg_lock:
-        _device_reg_attempts.setdefault(ip, [])
-        _device_reg_attempts[ip] = [t for t in _device_reg_attempts[ip] if now - t < window]
-        if len(_device_reg_attempts[ip]) >= max_attempts: return False
-        _device_reg_attempts[ip].append(now); return True
+    with _dev_reg_lock:
+        _dev_reg.setdefault(ip, [])
+        _dev_reg[ip] = [t for t in _dev_reg[ip] if now - t < window]
+        if len(_dev_reg[ip]) >= max_attempts: return False
+        _dev_reg[ip].append(now); return True
 
-# ── DEVICE ROUTES ──
 @app.route('/api/register-device', methods=['POST'])
 def api_register_device():
-    data = request.get_json()
-    username   = data.get('username', '').strip()
-    device_id  = data.get('device_id', '').strip()
-    public_key = data.get('public_key', '').strip()
-    label      = data.get('label', 'Unknown Device')
-    client_ip  = request.remote_addr
-    if not username or not device_id or not public_key: return jsonify({'error': 'registration failed'}), 400
-    if not check_device_reg_rate(client_ip): return jsonify({'error': 'registration failed'}), 429
+    d         = request.get_json()
+    username  = d.get('username', '').strip()
+    device_id = d.get('device_id', '').strip()
+    pub_key   = d.get('public_key', '').strip()
+    label     = str(d.get('label', 'Unknown Device'))[:50].strip()
+    client_ip = request.remote_addr
+    if not username or not device_id or not pub_key: return jsonify({'error': 'registration failed'}), 400
+    if not check_dev_rate(client_ip): return jsonify({'error': 'registration failed'}), 429
     if not get_user(username): return jsonify({'error': 'registration failed'}), 400
-    register_device(username, device_id, public_key, label, registered_ip=client_ip)
+    register_device(username, device_id, pub_key, label, registered_ip=client_ip)
     if username == 'admin':
         approve_device(device_id)
         add_to_whitelist(client_ip, f'admin ({label[:30]})')
@@ -1191,29 +830,29 @@ def api_register_device():
 
 @app.route('/api/update-ip', methods=['POST'])
 def api_update_ip():
-    data = request.get_json()
-    username, device_id = data.get('username','').strip(), data.get('device_id','').strip()
-    device_signature, device_message = data.get('device_signature',''), data.get('device_message','')
-    client_ip = request.remote_addr
-    if not all([username, device_id, device_signature, device_message]): return jsonify({'error': 'request failed'}), 400
-    if not check_device_reg_rate(client_ip, max_attempts=5): return jsonify({'error': 'request failed'}), 429
-    verify_payload = {'username': username, 'device_id': device_id, 'device_signature': device_signature, 'device_message': device_message}
-    if node4_device_signature(verify_payload) != 'PASS':
-        add_log(username, client_ip, 'DENIED', 'IP update — invalid device signature')
+    d          = request.get_json()
+    username   = d.get('username', '').strip()
+    device_id  = d.get('device_id', '').strip()
+    device_sig = d.get('device_signature', '')
+    device_msg = d.get('device_message', '')
+    client_ip  = request.remote_addr
+    if not all([username, device_id, device_sig, device_msg]): return jsonify({'error': 'request failed'}), 400
+    if not check_dev_rate(client_ip, max_attempts=5): return jsonify({'error': 'request failed'}), 429
+    if node4_device_signature({'username': username, 'device_id': device_id, 'device_signature': device_sig, 'device_message': device_msg}) != 'PASS':
+        add_log(username, client_ip, 'DENIED', 'IP update — invalid sig')
         return jsonify({'error': 'invalid device signature'}), 403
-    device = get_device(device_id)
-    label = device['label'] if device else 'Updated device'
+    dev   = get_device(device_id)
+    label = dev['label'] if dev else 'Updated device'
     add_to_whitelist(client_ip, f'{username} ({label[:30]})')
-    add_log(username, client_ip, 'GRANTED', 'IP updated via device signature')
+    add_log(username, client_ip, 'GRANTED', 'IP updated via device sig')
     return jsonify({'success': True, 'new_ip': client_ip})
 
 @app.route('/api/device-status')
 def api_device_status():
-    device_id = request.args.get('device_id', '')
-    if not device_id: return jsonify({'status': 'unknown'})
-    device = get_device(device_id)
-    if not device: return jsonify({'status': 'not_registered'})
-    return jsonify({'status': device['status']})
+    did = request.args.get('device_id', '')
+    if not did: return jsonify({'status': 'unknown'})
+    dev = get_device(did)
+    return jsonify({'status': dev['status'] if dev else 'not_registered'})
 
 @app.route('/api/devices')
 def api_devices():
@@ -1229,13 +868,13 @@ def api_devices():
 @app.route('/api/devices/approve', methods=['POST'])
 def api_device_approve():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    device_id = request.get_json()['device_id']
-    approve_device(device_id)
-    device = get_device(device_id)
-    if device and device.get('registered_ip'):
-        add_to_whitelist(device['registered_ip'], f"{device['username']} ({device['label'][:30]})")
-    socketio.emit('device_approved', {'device_id': device_id})
-    log_admin('approve_device', device_id)
+    did = request.get_json()['device_id']
+    approve_device(did)
+    dev = get_device(did)
+    if dev and dev.get('registered_ip'):
+        add_to_whitelist(dev['registered_ip'], f"{dev['username']} ({dev['label'][:30]})")
+    socketio.emit('device_approved', {'device_id': did})
+    log_admin('approve_device', did)
     return jsonify({'success': True})
 
 @app.route('/api/devices/reject', methods=['POST'])
@@ -1250,83 +889,74 @@ def api_device_delete():
     delete_device(request.get_json()['device_id'])
     return jsonify({'success': True})
 
-@app.route('/api/users', methods=['GET'])
+@app.route('/api/users')
 def api_get_users():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    from database import get_db, get_cursor
+    from database import get_cursor as _gc
     with get_db() as conn:
-        cur = get_cursor(conn)
+        cur = _gc(conn)
         cur.execute("SELECT username, role FROM users ORDER BY username")
         return jsonify([dict(r) for r in cur.fetchall()])
 
 @app.route('/api/users/add', methods=['POST'])
 def api_add_user():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    data = request.get_json()
-    username = data.get('username', '').strip()[:50]
-    password = data.get('password', '')[:128]
-    role     = data.get('role', 'Security Officer')[:50]
+    d        = request.get_json()
+    username = d.get('username', '').strip()[:50]
+    password = d.get('password', '')[:128]
+    role     = d.get('role', 'Security Officer')[:50]
     if not username or not password: return jsonify({'error': 'username and password required'}), 400
     import bcrypt
     hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
     try:
-        from database import get_db, get_cursor
+        from database import get_cursor as _gc
         with get_db() as conn:
-            cur = get_cursor(conn)
-            cur.execute("INSERT INTO users (username, password_hash, role, display_name) VALUES (%s, %s, %s, %s) ON CONFLICT (username) DO NOTHING",
+            cur = _gc(conn)
+            cur.execute("INSERT INTO users (username, password_hash, role, display_name) VALUES (%s,%s,%s,%s) ON CONFLICT (username) DO NOTHING",
                         (username, hashed, role, username))
             if cur.rowcount == 0: return jsonify({'error': 'username already exists'}), 409
         log_admin('add_user', username)
         return jsonify({'success': True})
     except Exception as e: return jsonify({'error': str(e)}), 500
 
-# ── EMERGENCY BREAK-GLASS ACCESS ──
-_emergency_used    = False
-_emergency_used_at = 0
-_emergency_cooldown = 300
+# ── EMERGENCY BREAK-GLASS ──
+_em_used     = False
+_em_used_at  = 0
+_em_cooldown = 300
 
 def _emergency_handler():
-    global _emergency_used, _emergency_used_at
-    emergency_pw = os.environ.get('EMERGENCY_PASSWORD', '')
-    allowed_ip   = os.environ.get('EMERGENCY_ALLOWED_IP', '')
-    client_ip    = request.remote_addr
-    if not emergency_pw: return jsonify({'error': 'not found'}), 404
-    if allowed_ip and client_ip != allowed_ip:
-        add_log('EMERGENCY', client_ip, 'DENIED', 'IP not authorized')
-        return jsonify({'error': 'not found'}), 404
-    if _emergency_used:
-        return jsonify({'error': 'emergency key already consumed — redeploy to reset'}), 429
+    global _em_used, _em_used_at
+    em_pw  = os.environ.get('EMERGENCY_PASSWORD', '')
+    em_ip  = os.environ.get('EMERGENCY_ALLOWED_IP', '')
+    client = request.remote_addr
+    if not em_pw: return jsonify({'error': 'not found'}), 404
+    if em_ip and client != em_ip: return jsonify({'error': 'not found'}), 404
+    if _em_used: return jsonify({'error': 'key already consumed — redeploy to reset'}), 429
     now = time.time()
-    if now - _emergency_used_at < _emergency_cooldown:
-        return jsonify({'error': f'cooldown active — wait {int(_emergency_cooldown-(now-_emergency_used_at))}s'}), 429
-    data = request.get_json() or {}
-    if data.get('password') != emergency_pw:
-        _emergency_used_at = now
-        add_log('EMERGENCY', client_ip, 'DENIED', 'Wrong password')
+    if now - _em_used_at < _em_cooldown:
+        return jsonify({'error': f'cooldown — wait {int(_em_cooldown-(now-_em_used_at))}s'}), 429
+    d = request.get_json() or {}
+    if d.get('password') != em_pw:
+        _em_used_at = now
+        add_log('EMERGENCY', client, 'DENIED', 'Wrong password')
         return jsonify({'error': 'unauthorized'}), 401
-    _emergency_used    = True
-    _emergency_used_at = now
-    sess_token = secrets.token_hex(32)
+    _em_used = True; _em_used_at = now
     delete_session('admin')
-    create_session('admin', client_ip, 'Emergency Admin', sess_token)
-    session['user']  = 'admin'
-    session['token'] = sess_token
+    create_session('admin', client, 'Emergency Admin', secrets.token_hex(32))
+    session['user'] = 'admin'
     set_consensus_state(True)
-    add_to_whitelist(client_ip, 'Emergency re-entry')
-    forgive_ip(client_ip)
-    clear_rate_limit(client_ip)
-    socketio.emit('chat_message', {'role': 'system', 'message': f'🚨 EMERGENCY ACCESS from {mask_ip(client_ip)} — key consumed.'})
-    add_log('admin', client_ip, 'EMERGENCY', 'Break-glass used — key consumed')
-    return jsonify({'granted': True, 'message': 'Emergency access granted. Key disabled.', 'next_steps': ['Go to /dashboard', 'Approve device', 'Forgive IP', 'Change EMERGENCY_PATH']})
+    add_to_whitelist(client, 'Emergency re-entry')
+    forgive_ip(client); clear_rate_limit(client)
+    socketio.emit('chat_message', {'role': 'system', 'message': f'🚨 EMERGENCY ACCESS from {mask_ip(client)} — key consumed.'})
+    add_log('admin', client, 'EMERGENCY', 'Break-glass used — key consumed')
+    return jsonify({'granted': True, 'message': 'Emergency access granted. Key disabled. Go to /dashboard.'})
 
-# Register emergency route dynamically — only exact secret path is registered
-# Unknown routes get Flask default 404, not caught by this handler
 _em_path = os.environ.get('EMERGENCY_PATH', 'emergency-access')
 app.add_url_rule(f'/api/{_em_path}', 'emergency_access', _emergency_handler, methods=['POST'])
 
 # ── MAIN ──
 if __name__ == '__main__':
-    print("Starting NETAD Security System — Guard AI: Level 100 Active")
+    print("NETAD Security System starting...")
     threading.Thread(target=token_cleanup_worker, daemon=True).start()
     port = int(os.environ.get('PORT', 5000))
     host = os.environ.get('HOST', '0.0.0.0')
