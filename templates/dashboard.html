@@ -343,6 +343,22 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
       </div>
     </div>
     <div class="panel grid-full">
+      <div class="panel-title">Camera URLs <span class="panel-badge">UPDATE WITHOUT REDEPLOYING</span></div>
+      <div class="input-row" style="gap:6px;margin-bottom:8px;">
+        <span style="font-family:var(--mono);font-size:9px;color:var(--accent);min-width:40px;align-self:center;">CAM 1</span>
+        <input class="mini-input" id="cam1-url-mgr" placeholder="https://xxxx.ngrok.io/video  or  rtsp://192.168.x.x:554/stream" style="flex:1;font-size:9px;"/>
+        <button class="mini-btn btn-green" style="font-size:9px;padding:4px 12px;" onclick="updateCamUrl(1,'cam1-url-mgr')">CONNECT</button>
+        <button class="mini-btn btn-red" style="font-size:9px;padding:4px 12px;" onclick="disconnectCam(1)">DISCONNECT</button>
+      </div>
+      <div class="input-row" style="gap:6px;">
+        <span style="font-family:var(--mono);font-size:9px;color:var(--accent);min-width:40px;align-self:center;">CAM 2</span>
+        <input class="mini-input" id="cam2-url-mgr" placeholder="https://xxxx.ngrok.io/video  or  rtsp://192.168.x.x:554/stream" style="flex:1;font-size:9px;"/>
+        <button class="mini-btn btn-green" style="font-size:9px;padding:4px 12px;" onclick="updateCamUrl(2,'cam2-url-mgr')">CONNECT</button>
+        <button class="mini-btn btn-red" style="font-size:9px;padding:4px 12px;" onclick="disconnectCam(2)">DISCONNECT</button>
+      </div>
+      <div style="font-size:8px;font-family:var(--mono);color:var(--text3);margin-top:8px;">Supports ngrok HTTP/MJPEG and RTSP IP cameras. Changes apply instantly without redeployment.</div>
+    </div>
+    <div class="panel grid-full">
       <div class="panel-title">Access Log <span class="panel-badge">LIVE</span></div>
       <div class="log-header"><span>TIME</span><span>IP ADDRESS</span><span>USER</span><span>STATUS</span></div>
       <div id="log-rows"><div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">Loading...</div></div>
