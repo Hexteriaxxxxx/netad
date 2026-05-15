@@ -446,23 +446,6 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
     </div>
   </div>
 
-  <!-- CAMERA MANAGER -->
-  <div id="cam-url-manager" style="margin-top:12px;padding:10px;background:var(--bg3);border:1px solid var(--border);border-radius:8px;">
-    <div style="font-family:var(--mono);font-size:9px;color:var(--text2);letter-spacing:1.5px;margin-bottom:8px;">CAMERA URLS — update without redeploying</div>
-    <div class="input-row" style="gap:6px;margin-bottom:6px;">
-      <span style="font-family:var(--mono);font-size:9px;color:var(--accent);min-width:40px;">CAM 1</span>
-      <input class="mini-input" id="cam1-url-input" placeholder="https://xxxx.ngrok.io/video  or  rtsp://192.168.x.x:554/stream" style="flex:1;font-size:9px;"/>
-      <button class="mini-btn btn-green" style="font-size:9px;padding:3px 10px;" onclick="updateCamUrl(1)">CONNECT</button>
-      <button class="mini-btn btn-red" style="font-size:9px;padding:3px 10px;" onclick="disconnectCam(1)">DISCONNECT</button>
-    </div>
-    <div class="input-row" style="gap:6px;">
-      <span style="font-family:var(--mono);font-size:9px;color:var(--accent);min-width:40px;">CAM 2</span>
-      <input class="mini-input" id="cam2-url-input" placeholder="https://xxxx.ngrok.io/video  or  rtsp://192.168.x.x:554/stream" style="flex:1;font-size:9px;"/>
-      <button class="mini-btn btn-green" style="font-size:9px;padding:3px 10px;" onclick="updateCamUrl(2)">CONNECT</button>
-      <button class="mini-btn btn-red" style="font-size:9px;padding:3px 10px;" onclick="disconnectCam(2)">DISCONNECT</button>
-    </div>
-    <div style="font-size:8px;font-family:var(--mono);color:var(--text3);margin-top:6px;">Supports ngrok HTTP/MJPEG and RTSP IP cameras. Changes apply instantly without redeployment.</div>
-  </div>
   <div id="tab-chat" class="tab-section">
     <div class="panel" style="height:calc(100vh - 260px);display:flex;flex-direction:column;">
       <div class="panel-title">
