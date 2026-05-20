@@ -595,12 +595,14 @@ function connectCamDirect(camId) {
   document.getElementById('cam-badge').textContent = 'LIVE';
   showToast(`📷 Cam ${camId} connected directly`, 'success');
 
-  // Also register on server side for Guard AI awareness
-  fetch('/api/camera/connect', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({cam_id: camId, url: url})
-  }).catch(()=>{});
+  // Only register HTTP/ngrok URLs on server - RTSP cant be reached from Railway
+  if (url.toLowerCase().startsWith('http')) {
+    fetch('/api/camera/connect', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cam_id: camId, url: url})
+    }).catch(()=>{});
+  }
 }
 
 function disconnectCamDirect(camId) {

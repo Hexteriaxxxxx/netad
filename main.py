@@ -844,16 +844,54 @@ def api_register_device():
     pub_key   = d.get('public_key', '').strip()
     label     = str(d.get('label', 'Unknown Device'))[:50].strip()
     client_ip = request.remote_addr
-    if not username or not device_id or not pub_key: return jsonify({'error': 'registration failed'}), 400
-    if not check_dev_rate(client_ip): return jsonify({'error': 'registration failed'}), 429
-    if not get_user(username): return jsonify({'error': 'registration failed'}), 400
+
+    # Basic validation
+    if not username or not device_id or not pub_key:
+        return jsonify({'error': 'registration failed'}), 400
+    if not check_dev_rate(client_ip):
+        return jsonify({'error': 'registration failed'}), 429
+    if not get_user(username):
+        return jsonify({'error': 'registration failed'}), 400
+
+    # Security: validate that the public key is a valid JWK EC key
+    # Reject malformed keys before storing
+    try:
+        jwk = json.loads(pub_key)
+        if not all(k in jwk for k in ('kty', 'crv', 'x', 'y')):
+            raise ValueError('Missing required JWK fields')
+        if jwk.get('kty') != 'EC' or jwk.get('crv') != 'P-256':
+            raise ValueError('Only EC P-256 keys are accepted')
+        # Validate x and y are valid base64url
+        import base64 as _b64
+        for coord in ('x', 'y'):
+            val = jwk[coord]
+            pad = 4 - len(val) % 4
+            if pad != 4: val += '=' * pad
+            decoded = _b64.urlsafe_b64decode(val)
+            if len(decoded) != 32:
+                raise ValueError(f'Invalid {coord} coordinate length')
+    except Exception as e:
+        add_log(username, client_ip, 'DENIED', f'Device reg rejected — invalid JWK: {e}')
+        return jsonify({'error': 'registration failed'}), 400
+
+    # Security: one device per browser fingerprint per user
+    # Check if this device_id already exists for a DIFFERENT user
+    existing = get_device(device_id)
+    if existing and existing.get('username') != username:
+        add_log(username, client_ip, 'DENIED', f'Device {device_id[:12]} already registered to another user')
+        return jsonify({'error': 'registration failed'}), 400
+
+    # ALL registrations go to pending — NO auto-approve, even for admin
+    # Admin approves via dashboard (including their own device)
     register_device(username, device_id, pub_key, label, registered_ip=client_ip)
-    if username == 'admin':
-        approve_device(device_id)
-        add_to_whitelist(client_ip, f'admin ({label[:30]})')
-        return jsonify({'status': 'approved'})
     pending = len(get_pending_devices())
-    socketio.emit('device_pending', {'username': username, 'device_id': device_id, 'label': label, 'pending_count': pending})
+    socketio.emit('device_pending', {
+        'username': username,
+        'device_id': device_id,
+        'label': label,
+        'pending_count': pending
+    })
+    add_log(username, client_ip, 'PENDING', f'Device registration pending: {label[:30]}')
     return jsonify({'status': 'pending'})
 
 @app.route('/api/update-ip', methods=['POST'])
@@ -897,13 +935,22 @@ def api_devices():
 def api_device_approve():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     did = request.get_json()['device_id']
-    approve_device(did)
+    # approve_device now returns list of revoked device_ids
+    revoked = approve_device(did)
     dev = get_device(did)
     if dev and dev.get('registered_ip'):
         add_to_whitelist(dev['registered_ip'], f"{dev['username']} ({dev['label'][:30]})")
-    socketio.emit('device_approved', {'device_id': did})
-    log_admin('approve_device', did)
-    return jsonify({'success': True})
+    # Notify dashboard — new device approved
+    socketio.emit('device_approved', {'device_id': did, 'username': dev['username'] if dev else ''})
+    # Notify any revoked devices — their Node 4 will now FAIL
+    for revoked_id in revoked:
+        socketio.emit('device_revoked', {
+            'device_id': revoked_id,
+            'reason': f'Superseded by new device approval for {dev["username"] if dev else ""}'
+        })
+        _notify_guard(f"🔄 Device {revoked_id[:12]}... revoked — {dev['username'] if dev else ''} approved a new device")
+    log_admin('approve_device', f"{did} (revoked {len(revoked)} old device(s))")
+    return jsonify({'success': True, 'revoked': revoked})
 
 @app.route('/api/devices/reject', methods=['POST'])
 def api_device_reject():

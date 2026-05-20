@@ -287,18 +287,52 @@ async function getDeviceLabel() {
 async function registerDevice(){
   const username=document.getElementById('reg-username').value.trim();
   if(!username){setRegStatus('// enter your username first','var(--red)');return;}
-  setRegStatus('// generating key pair...','var(--text2)');
+  setRegStatus('// checking existing device key...','var(--text2)');
   try{
+    // ── SECURITY: Check if this browser already has a key pair ──
+    const existingKp = await idbGet('device_keypair');
+    const existingDid = localStorage.getItem('netad_device_id');
+    const existingUsername = localStorage.getItem('netad_username');
+
+    if(existingKp && existingDid){
+      // Browser already has a registered key pair
+      // Do NOT allow registering a DIFFERENT username on this browser
+      if(existingUsername && existingUsername !== username){
+        setRegStatus(
+          `// this browser is already registered to "${existingUsername}" — you cannot register a different account here`,
+          'var(--red)'
+        );
+        return;
+      }
+      // Same username — re-register (e.g. status was rejected, trying again)
+      // Reuse existing key pair and device_id — do NOT generate a new one
+      _deviceKeyPair = existingKp;
+      _deviceId = existingDid;
+      _deviceUsername = username;
+      setRegStatus('// re-registering existing device key...','var(--text2)');
+      const pubJwk = await crypto.subtle.exportKey('jwk', existingKp.publicKey);
+      const label = await getDeviceLabel();
+      const res = await fetch('/api/register-device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,device_id:existingDid,public_key:JSON.stringify(pubJwk),label})});
+      const data = await res.json();
+      if(data.error){setRegStatus('// '+data.error,'var(--red)');}
+      else if(data.status==='approved'){localStorage.setItem('netad_username',username);showSection('login');}
+      else{localStorage.setItem('netad_username',username);showStatusMsg('pending',username);}
+      return;
+    }
+
+    // ── No existing key — generate fresh key pair for this browser ──
+    setRegStatus('// generating key pair...','var(--text2)');
     const kp=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},false,['sign','verify']);
     const pubJwk=await crypto.subtle.exportKey('jwk',kp.publicKey);
     const did=crypto.randomUUID();
     await idbSet('device_keypair',kp);
     localStorage.setItem('netad_device_id',did);
+    localStorage.setItem('netad_username',username);
     _deviceKeyPair=kp;_deviceId=did;_deviceUsername=username;
     const label = await getDeviceLabel();
     const res=await fetch('/api/register-device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,device_id:did,public_key:JSON.stringify(pubJwk),label})});
     const data=await res.json();
-    if(data.error){setRegStatus('// '+data.error,'var(--red)');}
+    if(data.error){setRegStatus('// '+data.error,'var(--red)');}    
     else if(data.status==='approved'){showSection('login');}
     else{showStatusMsg('pending',username);}
   }catch(e){setRegStatus('// registration failed: '+e.message,'var(--red)');}

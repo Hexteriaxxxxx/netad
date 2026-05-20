@@ -322,12 +322,37 @@ def get_pending_devices():
         return cur.fetchall()
 
 def approve_device(device_id):
+    """Approve a device.
+    ENFORCES ONE APPROVED DEVICE PER USER:
+    - Gets the username of the device being approved
+    - Revokes ALL other approved devices for that username first
+    - Then approves this device
+    Returns list of revoked device_ids so caller can notify.
+    """
     with get_db() as conn:
         cur = get_cursor(conn)
+        # Get username of device being approved
+        cur.execute("SELECT username FROM device_keys WHERE device_id = %s", (device_id,))
+        row = cur.fetchone()
+        if not row: return []
+        username = row['username']
+        # Get all currently approved devices for this user (to notify)
+        cur.execute(
+            "SELECT device_id FROM device_keys WHERE username = %s AND status = 'approved' AND device_id != %s",
+            (username, device_id)
+        )
+        revoked = [r['device_id'] for r in cur.fetchall()]
+        # Revoke all other approved devices for this user
+        cur.execute(
+            "UPDATE device_keys SET status = 'revoked' WHERE username = %s AND status = 'approved' AND device_id != %s",
+            (username, device_id)
+        )
+        # Approve this device
         cur.execute(
             "UPDATE device_keys SET status = 'approved', approved_at = NOW() WHERE device_id = %s",
             (device_id,)
         )
+        return revoked
 
 def reject_device(device_id):
     with get_db() as conn:
