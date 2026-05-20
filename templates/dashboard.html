@@ -307,11 +307,11 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
         <!-- Camera 1 connect row -->
         <div id="cam1-connect-area">
           <div class="cam-connect-row">
-            <input class="cam-connect-input" id="cam1-url-input" placeholder="https://xxxx.ngrok-free.app/video" />
-            <button class="cam-connect-btn" onclick="connectCamDirect(1)">📷 CONNECT</button>
-            <button class="cam-disconnect-btn" onclick="disconnectCamDirect(1)" id="cam1-disconnect" style="display:none;">✕ DISC</button>
+            <input class="cam-connect-input" id="cam1-url-input" placeholder="https://xxxx.ngrok-free.app/video  or  rtsp://..." />
+            <button class="cam-connect-btn" onclick="connectCam(1)">📷 CONNECT</button>
+            <button class="cam-disconnect-btn" onclick="disconnectCam(1)" id="cam1-disconnect" style="display:none;">✕ DISC</button>
           </div>
-          <div class="cam-url-hint">Paste your ngrok URL here — stream loads directly in browser (no server relay)</div>
+          <div class="cam-url-hint">ngrok HTTP/MJPEG loads directly in browser · RTSP relayed via server</div>
         </div>
 
         <!-- Camera 2 -->
@@ -333,8 +333,8 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
         <div id="cam2-connect-area">
           <div class="cam-connect-row">
             <input class="cam-connect-input" id="cam2-url-input" placeholder="https://xxxx.ngrok-free.app/video (optional)" />
-            <button class="cam-connect-btn" onclick="connectCamDirect(2)">📷 CONNECT</button>
-            <button class="cam-disconnect-btn" onclick="disconnectCamDirect(2)" id="cam2-disconnect" style="display:none;">✕ DISC</button>
+            <button class="cam-connect-btn" onclick="connectCam(2)">📷 CONNECT</button>
+            <button class="cam-disconnect-btn" onclick="disconnectCam(2)" id="cam2-disconnect" style="display:none;">✕ DISC</button>
           </div>
           <div class="cam-url-hint">Optional second camera</div>
         </div>
@@ -342,22 +342,7 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
         <div style="font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:10px;text-align:center;">Unlocks when all 6/6 nodes agree + approved device</div>
       </div>
     </div>
-    <div class="panel grid-full">
-      <div class="panel-title">Camera URLs <span class="panel-badge">UPDATE WITHOUT REDEPLOYING</span></div>
-      <div class="input-row" style="gap:6px;margin-bottom:8px;">
-        <span style="font-family:var(--mono);font-size:9px;color:var(--accent);min-width:40px;align-self:center;">CAM 1</span>
-        <input class="mini-input" id="cam1-url-mgr" placeholder="https://xxxx.ngrok.io/video  or  rtsp://192.168.x.x:554/stream" style="flex:1;font-size:9px;"/>
-        <button class="mini-btn btn-green" style="font-size:9px;padding:4px 12px;" onclick="updateCamUrl(1,'cam1-url-mgr')">CONNECT</button>
-        <button class="mini-btn btn-red" style="font-size:9px;padding:4px 12px;" onclick="disconnectCam(1)">DISCONNECT</button>
-      </div>
-      <div class="input-row" style="gap:6px;">
-        <span style="font-family:var(--mono);font-size:9px;color:var(--accent);min-width:40px;align-self:center;">CAM 2</span>
-        <input class="mini-input" id="cam2-url-mgr" placeholder="https://xxxx.ngrok.io/video  or  rtsp://192.168.x.x:554/stream" style="flex:1;font-size:9px;"/>
-        <button class="mini-btn btn-green" style="font-size:9px;padding:4px 12px;" onclick="updateCamUrl(2,'cam2-url-mgr')">CONNECT</button>
-        <button class="mini-btn btn-red" style="font-size:9px;padding:4px 12px;" onclick="disconnectCam(2)">DISCONNECT</button>
-      </div>
-      <div style="font-size:8px;font-family:var(--mono);color:var(--text3);margin-top:8px;">Supports ngrok HTTP/MJPEG and RTSP IP cameras. Changes apply instantly without redeployment.</div>
-    </div>
+
     <div class="panel grid-full">
       <div class="panel-title">Access Log <span class="panel-badge">LIVE</span></div>
       <div class="log-header"><span>TIME</span><span>IP ADDRESS</span><span>USER</span><span>STATUS</span></div>
@@ -573,77 +558,131 @@ function toggleCam(id){
   if(btn)btn.textContent=expanded?'⛶ COLLAPSE':'⛶ EXPAND';
 }
 
-// ── CAMERA DIRECT CONNECT (browser → ngrok, no server relay) ──
-const _directCamUrls = {1: '', 2: ''};
+// ── CAMERA — single unified connect/disconnect ──
+// Supports: HTTP MJPEG (ngrok) loaded directly in <img>,
+//           RTSP relayed via /api/camera/<id>/stream
+const _camUrls = {1:'',2:''};
+const _camImgErrors = {1:0,2:0};
+const MAX_IMG_ERRORS = 3;
 
-function connectCamDirect(camId) {
-  const input = document.getElementById(`cam${camId}-url-input`);
-  const url = input.value.trim();
-  if (!url) { showToast('Paste your ngrok URL first', 'error'); return; }
+function connectCam(camId) {
+  const input = document.getElementById('cam' + camId + '-url-input');
+  const url = input ? input.value.trim() : '';
+  if (!url) { showToast('Paste a camera URL first', 'error'); return; }
+  const img = document.getElementById('cam' + camId + '-img');
+  const isHttp = url.toLowerCase().startsWith('http');
+  img.onerror = null;
+  img.onload = null;
+  // HTTP: load directly in browser (no relay, no timestamp = no reload loop)
+  // RTSP: use server relay
+  img.src = isHttp ? url : '/api/camera/' + camId + '/stream';
+  let errCount = 0;
+  img.onerror = function() {
+    errCount++;
+    if (errCount >= 3) {
+      showToast('Cam ' + camId + ': stream failed — check URL', 'error', 5000);
+      disconnectCam(camId);
+    }
+  };
+  img.onload = function() { errCount = 0; };
+  document.getElementById('cam' + camId + '-locked').style.display = 'none';
+  document.getElementById('cam' + camId + '-live').style.display = 'block';
+  document.getElementById('cam' + camId + '-disconnect').style.display = 'inline-block';
+  document.getElementById('cam-badge').textContent = 'LIVE';
+  showToast('Cam ' + camId + ' connected', 'success');
+  fetch('/api/camera/connect', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cam_id: camId, url: url})
+  }).catch(function(){});
+}
+function connectCamDirect(camId) { connectCam(camId); }
 
-  const img = document.getElementById(`cam${camId}-img`);
-  img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
-  img.onerror = () => {
-    showToast(`Cam ${camId}: could not load stream — check URL`, 'error');
-    disconnectCamDirect(camId);
+function _doCamConnect(camId,url){
+  _camUrls[camId]=url;
+  _camImgErrors[camId]=0;
+  const img=document.getElementById(`cam${camId}-img`);
+  const isHttp=url.toLowerCase().startsWith('http');
+
+  // Set img src — NO cache-busting timestamp for MJPEG streams (causes reload loops)
+  // For RTSP use server relay; for HTTP use direct URL
+  const src=isHttp?url:`/api/camera/${camId}/stream`;
+  img.onerror=null; // clear before setting src
+  img.src=src;
+
+  img.onerror=()=>{
+    _camImgErrors[camId]++;
+    if(_camImgErrors[camId]>=MAX_IMG_ERRORS){
+      showToast(`Cam ${camId}: stream failed — check URL`,'error',5000);
+      disconnectCam(camId);
+    }
+    // else: browser will retry naturally — don't force reload
   };
 
-  _directCamUrls[camId] = url;
-  document.getElementById(`cam${camId}-locked`).style.display = 'none';
-  document.getElementById(`cam${camId}-live`).style.display = 'block';
-  document.getElementById(`cam${camId}-disconnect`).style.display = 'inline-block';
-  document.getElementById('cam-badge').textContent = 'LIVE';
-  showToast(`📷 Cam ${camId} connected directly`, 'success');
+  img.onload=()=>{ _camImgErrors[camId]=0; }; // reset on success
 
-  // Only register HTTP/ngrok URLs on server - RTSP cant be reached from Railway
-  if (url.toLowerCase().startsWith('http')) {
-    fetch('/api/camera/connect', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({cam_id: camId, url: url})
-    }).catch(()=>{});
-  }
+  document.getElementById(`cam${camId}-locked`).style.display='none';
+  document.getElementById(`cam${camId}-live`).style.display='block';
+  document.getElementById(`cam${camId}-disconnect`).style.display='inline-block';
+  document.getElementById('cam-badge').textContent='LIVE';
+  showToast(`📷 Cam ${camId} connected`,'success');
+
+  // Register on server for persistence (both HTTP and RTSP)
+  fetch('/api/camera/connect',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cam_id:camId,url})
+  }).catch(()=>{});
 }
 
-function disconnectCamDirect(camId) {
-  _directCamUrls[camId] = '';
-  const img = document.getElementById(`cam${camId}-img`);
-  img.src = '';
-  document.getElementById(`cam${camId}-locked`).style.display = 'flex';
-  document.getElementById(`cam${camId}-live`).style.display = 'none';
-  document.getElementById(`cam${camId}-disconnect`).style.display = 'none';
-  const anyLive = Object.values(_directCamUrls).some(u => u);
-  document.getElementById('cam-badge').textContent = anyLive ? 'LIVE' : 'LOCKED';
-  showToast(`Cam ${camId} disconnected`, 'info');
+function disconnectCam(camId){
+  _camUrls[camId]='';
+  _camImgErrors[camId]=0;
+  const img=document.getElementById(`cam${camId}-img`);
+  img.onerror=null;
+  img.onload=null;
+  img.src='';
+  document.getElementById(`cam${camId}-locked`).style.display='flex';
+  document.getElementById(`cam${camId}-live`).style.display='none';
+  document.getElementById(`cam${camId}-disconnect`).style.display='none';
+  const anyLive=Object.values(_camUrls).some(u=>u);
+  document.getElementById('cam-badge').textContent=anyLive?'LIVE':'LOCKED';
+  showToast(`Cam ${camId} disconnected`,'info');
+  fetch('/api/camera/disconnect',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cam_id:camId})
+  }).catch(()=>{});
 }
 
-// ── ORIGINAL CAMERA (server-relay, for consensus-gated auto-unlock) ──
-let _cameraOpen = false;
 function setCameraState(open){
-  _cameraOpen = open;
-  // Only auto-open server-relay cams if no direct cam is already set
+  // Only auto-unlock via consensus if user hasn't manually connected a cam
   for(let i=1;i<=2;i++){
-    if (_directCamUrls[i]) continue; // already directly connected
-    document.getElementById(`cam${i}-locked`).style.display = open ? 'none' : 'flex';
-    document.getElementById(`cam${i}-live`).style.display = open ? 'block' : 'none';
-    if(open){
-      const img = document.getElementById(`cam${i}-img`);
-      img.src = `/api/camera/${i}/stream?t=${Date.now()}`;
-    } else {
-      document.getElementById(`cam${i}-img`).src = '';
+    if(_camUrls[i]) continue; // user already connected manually
+    if(!open){
+      document.getElementById(`cam${i}-locked`).style.display='flex';
+      document.getElementById(`cam${i}-live`).style.display='none';
+      document.getElementById(`cam${i}-img`).src='';
     }
   }
-  if(open) document.getElementById('cam-badge').textContent = 'LIVE';
+  if(!open) document.getElementById('cam-badge').textContent='LOCKED';
 }
 
 async function checkCameraStatus(){
   try{
-    const d = await fetch('/api/camera/status').then(r=>r.json());
-    setCameraState(d.accessible);
-    // Pre-fill input if CAMERA_1_URL was set on server
+    const d=await fetch('/api/camera/status').then(r=>r.json());
+    // If server already has cam URLs from env, pre-connect
     for(const[k,v] of Object.entries(d.cameras||{})){
-      if(v.masked_url && !document.getElementById(`cam${k}-url-input`).value){
-        // Don't fill masked URL (it has *** in it), just leave placeholder
+      const id=parseInt(k);
+      if(v.configured&&!_camUrls[id]&&d.accessible){
+        // Server has a configured cam and consensus is granted — use server relay
+        const img=document.getElementById(`cam${id}-img`);
+        img.onerror=null;
+        img.src=`/api/camera/${id}/stream`;
+        document.getElementById(`cam${id}-locked`).style.display='none';
+        document.getElementById(`cam${id}-live`).style.display='block';
+        document.getElementById(`cam${id}-disconnect`).style.display='inline-block';
+        document.getElementById('cam-badge').textContent='LIVE';
       }
     }
   }catch(e){}
@@ -916,24 +955,8 @@ async function doAddUser(){
   showToast(`User '${username}' added!`,'success',5000);
 }
 
-// ── CAMERA URL MANAGER ──
-async function updateCamUrl(camId){
-  const url=document.getElementById(`cam${camId}-url-input`).value.trim();
-  if(!url){showToast('Enter a URL first','error');return;}
-  const res=await fetch('/api/camera/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cam_id:camId,url})});
-  const data=await res.json();
-  if(data.error){showToast(data.error,'error');return;}
-  showToast(`Camera ${camId} connected: ${data.masked_url}`,'success',4000);
-  loadMetrics();
-}
-async function disconnectCam(camId){
-  await fetch('/api/camera/disconnect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cam_id:camId})});
-  document.getElementById(`cam${camId}-url-input`).value='';
-  showToast(`Camera ${camId} disconnected`,'warning');
-  loadMetrics();
-}
 socket.on('camera_connected',d=>{
-  showToast(`Camera ${d.cam_id} connected: ${d.masked_url}`,'success',4000);
+  showToast(`📷 Camera ${d.cam_id} connected: ${d.masked_url}`,'success',4000);
   loadMetrics();
 });
 
