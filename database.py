@@ -6,6 +6,8 @@ import psycopg2
 import psycopg2.extras
 from contextlib import contextmanager
 from dotenv import load_dotenv
+import threading
+import time
 
 load_dotenv()
 
@@ -26,6 +28,45 @@ def get_db():
 
 def get_cursor(conn):
     return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+# ══════════════════════════════════════════════════
+# IN-MEMORY CACHE — whitelist + blacklist
+# Prevents DB connection timeouts during parallel node consensus
+# Refreshes every 30 seconds automatically
+# ══════════════════════════════════════════════════
+_wl_cache: set = set()
+_bl_cache: set = set()
+_cache_lock = threading.Lock()
+_cache_ts   = 0.0
+_CACHE_TTL  = 30  # seconds
+
+def _refresh_cache(force=False):
+    global _wl_cache, _bl_cache, _cache_ts
+    now = time.time()
+    with _cache_lock:
+        if not force and now - _cache_ts < _CACHE_TTL:
+            return
+    try:
+        with get_db() as conn:
+            cur = get_cursor(conn)
+            cur.execute("SELECT ip FROM whitelist")
+            wl = {row['ip'] for row in cur.fetchall()}
+            cur.execute(
+                "SELECT ip FROM blacklist WHERE type = 'permanent' OR blocked_until > NOW()"
+            )
+            bl = {row['ip'] for row in cur.fetchall()}
+        with _cache_lock:
+            _wl_cache  = wl
+            _bl_cache  = bl
+            _cache_ts  = now
+    except Exception as e:
+        print(f"[Cache] refresh error: {e}")
+
+def invalidate_cache():
+    """Call after any whitelist/blacklist write so next check re-fetches immediately."""
+    global _cache_ts
+    with _cache_lock:
+        _cache_ts = 0.0
 
 # ── USERS ──
 def get_user(username):
@@ -48,17 +89,16 @@ def normalize_ip(ip: str) -> str:
     """Normalize IP — strips IPv6-mapped IPv4 prefix and zone IDs."""
     if not ip: return ip
     ip = ip.strip()
-    if ip.startswith('::ffff:'): ip = ip[7:]   # ::ffff:1.2.3.4 → 1.2.3.4
+    if ip.startswith('::ffff:'): ip = ip[7:]
     if ip.startswith('::FFFF:'): ip = ip[7:]
-    if '%' in ip: ip = ip.split('%')[0]         # zone ID removal
+    if '%' in ip: ip = ip.split('%')[0]
     return ip
 
 def is_whitelisted(ip):
     ip = normalize_ip(ip)
-    with get_db() as conn:
-        cur = get_cursor(conn)
-        cur.execute("SELECT id FROM whitelist WHERE ip = %s", (ip,))
-        return cur.fetchone() is not None
+    _refresh_cache()
+    with _cache_lock:
+        return ip in _wl_cache
 
 def get_whitelist():
     with get_db() as conn:
@@ -74,22 +114,20 @@ def add_to_whitelist(ip, label='Unknown device'):
             "INSERT INTO whitelist (ip, label) VALUES (%s, %s) ON CONFLICT (ip) DO NOTHING",
             (ip, label)
         )
+    invalidate_cache()
 
 def remove_from_whitelist(ip):
     with get_db() as conn:
         cur = get_cursor(conn)
         cur.execute("DELETE FROM whitelist WHERE ip = %s", (ip,))
+    invalidate_cache()
 
 # ── BLACKLIST ──
 def is_blacklisted(ip):
     ip = normalize_ip(ip)
-    with get_db() as conn:
-        cur = get_cursor(conn)
-        cur.execute(
-            "SELECT id FROM blacklist WHERE ip = %s AND (type = 'permanent' OR blocked_until > NOW())",
-            (ip,)
-        )
-        return cur.fetchone() is not None
+    _refresh_cache()
+    with _cache_lock:
+        return ip in _bl_cache
 
 def get_blacklist():
     with get_db() as conn:
@@ -114,11 +152,13 @@ def add_to_blacklist(ip, block_type='temporary', duration_seconds=1800):
             """,
             (ip, block_type, blocked_until)
         )
+    invalidate_cache()
 
 def forgive_ip(ip):
     with get_db() as conn:
         cur = get_cursor(conn)
         cur.execute("DELETE FROM blacklist WHERE ip = %s", (ip,))
+    invalidate_cache()
 
 # ── LOGS ──
 def add_log(username, ip, result, reason=''):
@@ -136,7 +176,6 @@ def get_logs(limit=50):
         return cur.fetchall()
 
 def get_logs_today(limit=50):
-    """Get logs from today only — resets at midnight."""
     with get_db() as conn:
         cur = get_cursor(conn)
         cur.execute(
@@ -151,18 +190,9 @@ def get_logs_today(limit=50):
 
 # ── SESSIONS ──
 def create_session(username, ip, role, token):
-    """
-    Create a session for a user.
-    ENFORCES ONE SESSION PER USERNAME:
-    - Deletes ALL existing sessions for this username first
-    - Then inserts the new session
-    - Broadcasts kick to old session via socketio (handled in main.py before calling this)
-    """
     with get_db() as conn:
         cur = get_cursor(conn)
-        # Hard delete ALL rows for this username — no duplicates possible
         cur.execute("DELETE FROM sessions WHERE username = %s", (username,))
-        # Insert fresh session
         cur.execute(
             """
             INSERT INTO sessions (username, ip, role, token, last_seen)
@@ -187,13 +217,11 @@ def get_sessions():
         return cur.fetchall()
 
 def delete_session(username):
-    """Delete ALL sessions for a username — ensures complete cleanup."""
     with get_db() as conn:
         cur = get_cursor(conn)
         cur.execute("DELETE FROM sessions WHERE username = %s", (username,))
 
 def delete_all_sessions():
-    """Emergency — wipe ALL active sessions."""
     with get_db() as conn:
         cur = get_cursor(conn)
         cur.execute("DELETE FROM sessions")
@@ -265,6 +293,7 @@ def clear_rate_limit(ip):
         cur = get_cursor(conn)
         cur.execute("DELETE FROM logs WHERE ip = %s AND result IN ('DENIED', 'SUSPICIOUS')", (ip,))
         cur.execute("DELETE FROM blacklist WHERE ip = %s", (ip,))
+    invalidate_cache()
     return True
 
 # ── CHAT LOGS ──
@@ -322,32 +351,21 @@ def get_pending_devices():
         return cur.fetchall()
 
 def approve_device(device_id):
-    """Approve a device.
-    ENFORCES ONE APPROVED DEVICE PER USER:
-    - Gets the username of the device being approved
-    - Revokes ALL other approved devices for that username first
-    - Then approves this device
-    Returns list of revoked device_ids so caller can notify.
-    """
     with get_db() as conn:
         cur = get_cursor(conn)
-        # Get username of device being approved
         cur.execute("SELECT username FROM device_keys WHERE device_id = %s", (device_id,))
         row = cur.fetchone()
         if not row: return []
         username = row['username']
-        # Get all currently approved devices for this user (to notify)
         cur.execute(
             "SELECT device_id FROM device_keys WHERE username = %s AND status = 'approved' AND device_id != %s",
             (username, device_id)
         )
         revoked = [r['device_id'] for r in cur.fetchall()]
-        # Revoke all other approved devices for this user
         cur.execute(
             "UPDATE device_keys SET status = 'revoked' WHERE username = %s AND status = 'approved' AND device_id != %s",
             (username, device_id)
         )
-        # Approve this device
         cur.execute(
             "UPDATE device_keys SET status = 'approved', approved_at = NOW() WHERE device_id = %s",
             (device_id,)

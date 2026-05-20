@@ -1,11 +1,11 @@
 # main.py — NETAD Security System (Railway-compatible, optimized)
 
-from flask import Flask, request, jsonify, render_template, session, redirect, url_for, Response
+from flask import Flask, request, jsonify, render_template, session, redirect, Response
 from flask_socketio import SocketIO, emit
 from werkzeug.middleware.proxy_fix import ProxyFix
 from block import Block
 from database import (
-    add_log, get_logs, get_logs_today, get_sessions, delete_session,
+    add_log, get_logs_today, get_sessions, delete_session,
     get_blacklist, add_to_blacklist, forgive_ip,
     get_whitelist, add_to_whitelist, remove_from_whitelist,
     get_ai_logs, create_session, update_session_heartbeat,
