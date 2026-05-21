@@ -23,9 +23,17 @@ import os, threading, time, secrets, json, base64, re, datetime
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY')
-if not app.secret_key:
-    raise RuntimeError("SECRET_KEY is not set in .env")
+# Debug — print all env vars on startup
+import sys
+print("=== NETAD ENV DEBUG ===")
+for k in ['SECRET_KEY','DATABASE_URL','ALLOWED_ORIGIN','GROQ_API_KEY','PORT','HOST']:
+    v = os.environ.get(k,'')
+    print(f"  {k}: {'SET (' + str(len(v)) + ' chars)' if v else 'MISSING'}")
+print("=== END DEBUG ===")
+
+app.secret_key = os.environ.get('SECRET_KEY') or 'fallback_dev_key_change_in_prod'
+if not os.environ.get('SECRET_KEY'):
+    print("WARNING: SECRET_KEY not set — using fallback!")
 
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SECURE']   = os.environ.get('SECURE_COOKIES', 'false').lower() == 'true'

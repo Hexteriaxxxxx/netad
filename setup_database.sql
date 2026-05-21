@@ -1,6 +1,6 @@
 -- ================================================
 -- NETAD Security System — Database Setup Script
--- Run once: psql -U postgres -d netad -f setup_database.sql
+-- Run once via PgAdmin Query Tool or psql
 -- ================================================
 
 CREATE TABLE IF NOT EXISTS users (
@@ -66,19 +66,20 @@ CREATE TABLE IF NOT EXISTS chat_logs (
     id        SERIAL PRIMARY KEY,
     role      VARCHAR(20) NOT NULL,
     message   TEXT NOT NULL,
+    sender    VARCHAR(50) DEFAULT '',
     timestamp TIMESTAMP DEFAULT NOW()
 );
 
--- Device keys table for Web Crypto + IndexedDB device authentication
 CREATE TABLE IF NOT EXISTS device_keys (
-    id          SERIAL PRIMARY KEY,
-    username    VARCHAR(50)  NOT NULL,
-    device_id   VARCHAR(128) UNIQUE NOT NULL,
-    public_key  TEXT         NOT NULL,
-    label       VARCHAR(100) DEFAULT 'Unknown Device',
-    status      VARCHAR(20)  NOT NULL DEFAULT 'pending',
-    created_at  TIMESTAMP DEFAULT NOW(),
-    approved_at TIMESTAMP
+    id            SERIAL PRIMARY KEY,
+    username      VARCHAR(50)  NOT NULL,
+    device_id     VARCHAR(128) UNIQUE NOT NULL,
+    public_key    TEXT         NOT NULL,
+    label         VARCHAR(100) DEFAULT 'Unknown Device',
+    status        VARCHAR(20)  NOT NULL DEFAULT 'pending',
+    registered_ip VARCHAR(45)  DEFAULT '',
+    created_at    TIMESTAMP DEFAULT NOW(),
+    approved_at   TIMESTAMP
 );
 
 -- INDEXES

@@ -671,23 +671,25 @@ function setCameraState(open){
 async function checkCameraStatus(){
   try{
     const d=await fetch('/api/camera/status').then(r=>r.json());
-    // If server already has cam URLs from env, pre-connect
-    for(const[k,v] of Object.entries(d.cameras||{})){
-      const id=parseInt(k);
-      if(v.configured&&!_camUrls[id]&&d.accessible){
-        // Server has a configured cam and consensus is granted — use server relay
-        const img=document.getElementById(`cam${id}-img`);
-        img.onerror=null;
-        img.src=`/api/camera/${id}/stream`;
-        document.getElementById(`cam${id}-locked`).style.display='none';
-        document.getElementById(`cam${id}-live`).style.display='block';
-        document.getElementById(`cam${id}-disconnect`).style.display='inline-block';
-        document.getElementById('cam-badge').textContent='LIVE';
+    if(d.accessible){
+      document.getElementById('cam-badge').textContent='UNLOCKED';
+      for(const[k,v] of Object.entries(d.cameras||{})){
+        const id=parseInt(k);
+        if(v.configured&&!_camUrls[id]){
+          const img=document.getElementById('cam'+id+'-img');
+          img.onerror=null;
+          img.src='/api/camera/'+id+'/stream';
+          document.getElementById('cam'+id+'-locked').style.display='none';
+          document.getElementById('cam'+id+'-live').style.display='block';
+          document.getElementById('cam'+id+'-disconnect').style.display='inline-block';
+          document.getElementById('cam-badge').textContent='LIVE';
+        }
       }
     }
   }catch(e){}
 }
 checkCameraStatus();
+setInterval(checkCameraStatus,5000);
 
 // ── NODE STATUS ──
 function updateNodeStatus(nodes){
