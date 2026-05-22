@@ -2,8 +2,11 @@
 # Central database manager for NETAD Security System
 
 import os
+import re
+import ipaddress
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 from contextlib import contextmanager
 from dotenv import load_dotenv
 import threading
@@ -14,9 +17,33 @@ load_dotenv()
 def get_database_url():
     return os.environ.get('DATABASE_URL', 'postgresql://postgres:yourpassword@localhost:5432/netad')
 
+# ══════════════════════════════════════════════════
+# CONNECTION POOL
+# Reuses existing DB connections instead of creating a new TCP
+# connection on every request. Cuts response time significantly.
+# ══════════════════════════════════════════════════
+_pool: psycopg2.pool.ThreadedConnectionPool = None
+_pool_lock = threading.Lock()
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                try:
+                    _pool = psycopg2.pool.ThreadedConnectionPool(
+                        minconn=2, maxconn=10, dsn=get_database_url()
+                    )
+                    print('[DB] Connection pool initialized (2-10 connections)')
+                except Exception as e:
+                    print(f'[DB] Pool init failed: {e}')
+                    raise
+    return _pool
+
 @contextmanager
 def get_db():
-    conn = psycopg2.connect(get_database_url())
+    pool = _get_pool()
+    conn = pool.getconn()
     try:
         yield conn
         conn.commit()
@@ -24,10 +51,39 @@ def get_db():
         conn.rollback()
         raise e
     finally:
-        conn.close()
+        pool.putconn(conn)
 
 def get_cursor(conn):
     return conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+# ══════════════════════════════════════════════════
+# INPUT VALIDATION
+# ══════════════════════════════════════════════════
+def normalize_ip(ip: str) -> str:
+    """Normalize IP — strips IPv6-mapped IPv4 prefix and zone IDs."""
+    if not ip: return ip
+    ip = ip.strip()
+    if ip.startswith('::ffff:'): ip = ip[7:]
+    if ip.startswith('::FFFF:'): ip = ip[7:]
+    if '%' in ip: ip = ip.split('%')[0]
+    return ip
+
+def is_valid_ip(ip: str) -> bool:
+    """Validate IPv4 or IPv6 address."""
+    if not ip: return False
+    try:
+        ipaddress.ip_address(normalize_ip(ip.strip()))
+        return True
+    except ValueError:
+        return False
+
+def is_valid_username(username: str) -> bool:
+    """3-50 chars, alphanumeric + underscore only."""
+    return bool(username and 3 <= len(username) <= 50 and re.match(r'^[a-zA-Z0-9_]+$', username))
+
+def is_valid_password(password: str) -> bool:
+    """Minimum 8 characters."""
+    return bool(password and len(password) >= 8)
 
 # ══════════════════════════════════════════════════
 # IN-MEMORY CACHE — whitelist + blacklist
@@ -85,15 +141,6 @@ def verify_password(username, password):
     return stored == hashlib.sha256(password.encode()).hexdigest()
 
 # ── WHITELIST ──
-def normalize_ip(ip: str) -> str:
-    """Normalize IP — strips IPv6-mapped IPv4 prefix and zone IDs."""
-    if not ip: return ip
-    ip = ip.strip()
-    if ip.startswith('::ffff:'): ip = ip[7:]
-    if ip.startswith('::FFFF:'): ip = ip[7:]
-    if '%' in ip: ip = ip.split('%')[0]
-    return ip
-
 def is_whitelisted(ip):
     ip = normalize_ip(ip)
     _refresh_cache()

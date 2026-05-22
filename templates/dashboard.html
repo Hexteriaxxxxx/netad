@@ -638,6 +638,14 @@ function connectCam(camId){
 }
 
 async function _doCamConnect(camId,url){
+  // Auto-append /video for bare ngrok URLs (common mistake)
+  // e.g. https://xxxx.ngrok-free.app → https://xxxx.ngrok-free.app/video
+  if(url.match(/ngrok[-.].*\.(app|dev|io)\/?$/)&&!url.includes('/video')&&!url.includes('/stream')){
+    url=url.replace(/\/+$/,'')+'/video';
+    const input=document.getElementById('cam'+camId+'-url-input');
+    if(input) input.value=url;
+    showToast(`⚠️ Auto-added /video to URL`,'info',2500);
+  }
   _camUrls[camId]=url;
   _camImgErrors[camId]=0;
   const img=document.getElementById(`cam${camId}-img`);
@@ -768,7 +776,7 @@ async function checkCameraStatus(){
   }catch(e){}
 }
 checkCameraStatus();
-setInterval(checkCameraStatus,5000);
+setInterval(checkCameraStatus,30000);
 
 // ── NODE STATUS ──
 function updateNodeStatus(nodes){
@@ -796,7 +804,7 @@ async function fetchLayerStatus(){
     document.getElementById('layer-badge').textContent=`${alive}/${total} ACTIVE`;
   }catch(e){}
 }
-fetchLayerStatus();setInterval(fetchLayerStatus,8000);
+fetchLayerStatus();setInterval(fetchLayerStatus,30000);
 
 // ── METRICS ──
 async function loadMetrics(){

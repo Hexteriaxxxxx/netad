@@ -16,7 +16,7 @@ from database import (
     approve_device, reject_device, delete_device, get_pending_devices,
     is_whitelisted, is_blacklisted, get_all_failed_count,
     claim_token, get_device_public_key, clear_rate_limit,
-    get_db, normalize_ip
+    get_db, normalize_ip, is_valid_ip, is_valid_username, is_valid_password
 )
 from dotenv import load_dotenv
 import os, threading, time, secrets, json, base64, re, datetime
@@ -148,11 +148,20 @@ def generate_camera_stream(cam_id):
 
 @app.route('/api/camera/<int:cam_id>/stream')
 def camera_stream(cam_id):
-    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    if not get_camera_url(cam_id): return jsonify({'error': 'not configured'}), 503
-    # Allow stream if: (a) consensus granted, OR (b) user explicitly connected a dynamic cam
-    if not is_consensus_granted() and cam_id not in _dynamic_cams:
+    url = get_camera_url(cam_id)
+    consensus = is_consensus_granted()
+    in_dynamic = cam_id in _dynamic_cams
+    print(f"[CAM {cam_id}] Stream request — logged_in: {'user' in session}, url: {url[:40] if url else 'NONE'}, consensus: {consensus}, in_dynamic: {in_dynamic}")
+    if 'user' not in session:
+        print(f"[CAM {cam_id}] BLOCKED — not logged in")
+        return jsonify({'error': 'unauthorized'}), 401
+    if not url:
+        print(f"[CAM {cam_id}] BLOCKED — no URL configured")
+        return jsonify({'error': 'not configured'}), 503
+    if not consensus and not in_dynamic:
+        print(f"[CAM {cam_id}] BLOCKED — consensus not met and not in dynamic cams")
         return jsonify({'error': 'consensus not met'}), 403
+    print(f"[CAM {cam_id}] Starting stream...")
     return Response(generate_camera_stream(cam_id), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/api/camera/connect', methods=['POST'])
@@ -874,8 +883,10 @@ def api_blacklist():
 def api_blacklist_add():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     d = request.get_json()
-    add_to_blacklist(d['ip'], d.get('type', 'temporary'))
-    socketio.emit('ip_blocked', {'ip': d['ip'], 'type': d.get('type','temporary'), 'by': session.get('user','admin')})
+    ip = (d.get('ip') or '').strip()
+    if not is_valid_ip(ip): return jsonify({'error': f'Invalid IP address: {ip}'}), 400
+    add_to_blacklist(ip, d.get('type', 'temporary'))
+    socketio.emit('ip_blocked', {'ip': ip, 'type': d.get('type','temporary'), 'by': session.get('user','admin')})
     return jsonify({'success': True})
 
 @app.route('/api/blacklist/forgive', methods=['POST'])
@@ -904,8 +915,11 @@ def api_whitelist():
 def api_whitelist_add():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     d = request.get_json()
-    add_to_whitelist(d['ip'], d.get('label', 'New device'))
-    socketio.emit('ip_whitelisted', {'ip': d['ip'], 'label': d.get('label','New device'), 'by': session.get('user','admin')})
+    ip = (d.get('ip') or '').strip()
+    if not is_valid_ip(ip): return jsonify({'error': f'Invalid IP address: {ip}'}), 400
+    label = (d.get('label') or 'New device').strip()[:50]
+    add_to_whitelist(ip, label)
+    socketio.emit('ip_whitelisted', {'ip': ip, 'label': label, 'by': session.get('user','admin')})
     return jsonify({'success': True})
 
 @app.route('/api/whitelist/remove', methods=['POST'])
@@ -1108,7 +1122,9 @@ def api_add_user():
     username = d.get('username', '').strip()[:50]
     password = d.get('password', '')[:128]
     role     = d.get('role', 'Security Officer')[:50]
-    if not username or not password: return jsonify({'error': 'username and password required'}), 400
+    if not username or not password: return jsonify({'error': 'Username and password required'}), 400
+    if not is_valid_username(username): return jsonify({'error': 'Username must be 3-50 chars, letters/numbers/underscore only'}), 400
+    if not is_valid_password(password): return jsonify({'error': 'Password must be at least 8 characters'}), 400
     import bcrypt
     hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
     try:
