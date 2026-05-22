@@ -9,3 +9,4 @@ restartPolicyMaxRetries = 3
 [variables]
 DISABLE_IP_WHITELIST = "true"
 HOST = "0.0.0.0"
+NIXPACKS_NO_CACHE = "1"
