@@ -99,6 +99,9 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
 .tag-granted{background:rgba(0,229,160,0.11);color:var(--accent);font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;display:inline-block;}
 .tag-denied{background:rgba(255,77,77,0.11);color:var(--red);font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;display:inline-block;}
 .tag-suspicious{background:rgba(255,179,68,0.11);color:var(--amber);font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;display:inline-block;}
+.tag-admin-action{background:rgba(0,180,216,0.11);color:var(--blue);font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;display:inline-block;}
+.tag-emergency{background:rgba(255,77,77,0.22);color:#ff8080;font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;display:inline-block;border:1px solid rgba(255,77,77,0.4);}
+.tag-pending-log{background:rgba(255,179,68,0.11);color:var(--amber);font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;display:inline-block;}
 .tbl-header{display:grid;gap:8px;font-size:9px;font-family:var(--mono);color:var(--text3);letter-spacing:1.5px;padding-bottom:8px;border-bottom:1px solid var(--border);text-transform:uppercase;}
 .tbl-row{display:grid;gap:8px;font-size:11px;font-family:var(--mono);padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.03);align-items:center;transition:background 0.15s;}
 .tbl-row:hover{background:rgba(255,255,255,0.015);}
@@ -490,8 +493,14 @@ socket.on('session_kicked',d=>{
   }
 });
 socket.on('guard_action',d=>{showToast(`Guard: ${d.action} on ${d.ip||d.username}`,'info');loadBlacklist();loadWhitelist();});
+// _guardReplied: set true when sendChat() already displayed the assistant reply
+// via the REST response, so the socket broadcast doesn't create a duplicate.
+let _guardReplied = false;
 socket.on('chat_message',d=>{
-  if(d.role==='assistant') appendChatMsg('assistant',d.message);
+  if(d.role==='assistant'){
+    if(_guardReplied){ _guardReplied=false; return; } // already shown via REST
+    appendChatMsg('assistant',d.message);
+  }
   else if(d.role==='user'&&d.sender&&d.sender!=='{{ user }}') appendChatMsg('other-user',d.message,null,d.sender);
   else if(d.role==='system') appendChatMsg('system-alert',d.message);
 });
@@ -798,8 +807,16 @@ async function loadLogs(){
     if(!logs.length){c.innerHTML='<div style="color:var(--text3);font-family:var(--mono);font-size:11px;padding:12px 0;">No login attempts yet</div>';return;}
     logs.slice(0,20).forEach(l=>{
       const div=document.createElement('div');div.className='log-row';
-      const tag=l.result==='GRANTED'?'tag-granted':l.result==='SUSPICIOUS'?'tag-suspicious':'tag-denied';
-      div.innerHTML=`<span class="log-time">${fmtTs(l.timestamp)}</span><span class="log-ip">${l.ip||'—'}</span><span class="log-user">${l.username||'—'}</span><span class="${tag}">${l.result}</span>`;
+      const r=l.result||'';
+      const tag=r==='GRANTED'?'tag-granted'
+               :r==='SUSPICIOUS'?'tag-suspicious'
+               :r==='ADMIN'?'tag-admin-action'
+               :r==='EMERGENCY'?'tag-emergency'
+               :r==='PENDING'?'tag-pending-log'
+               :'tag-denied';
+      // Show a friendlier label for internal result types
+      const label=r==='ADMIN'?'ADMIN ACTION':r==='PENDING'?'PENDING':r||'DENIED';
+      div.innerHTML=`<span class="log-time">${fmtTs(l.timestamp)}</span><span class="log-ip">${l.ip||'—'}</span><span class="log-user">${l.username||'—'}</span><span class="${tag}">${label}</span>`;
       c.appendChild(div);
     });
   }catch(e){}
@@ -1030,10 +1047,19 @@ async function sendChat(){
     const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg})});
     const data=await res.json();
     removeTyping();
-    if(data.reply&&data.reply.startsWith('Guard unavailable')) appendChatMsg('assistant',data.reply);
+    if(data.reply){
+      // Mark that we're showing the reply here so the socket broadcast
+      // (which goes to ALL users including sender) doesn't duplicate it.
+      _guardReplied=true;
+      appendChatMsg('assistant',data.reply);
+    }
     if(data.error) appendChatMsg('assistant','Error: '+data.error);
     if(data.action_result&&data.action_result.length){loadBlacklist();loadWhitelist();loadSessions();loadMetrics();loadDevices();}
-  }catch(e){removeTyping();appendChatMsg('assistant','Connection error.');}
+  }catch(e){
+    removeTyping();
+    _guardReplied=false; // reset — socket may still deliver
+    appendChatMsg('assistant','Connection error — check Railway logs.');
+  }
   btn.disabled=false;
 }
 async function loadChatHistory(){

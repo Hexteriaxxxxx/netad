@@ -785,6 +785,11 @@ def login():
         session['user'] = username
         session['token'] = sess_token
         set_consensus_state(True)
+        # Auto-whitelist the IP on every successful login.
+        # All 6 nodes passed (including ECDSA device sig) — the user is fully verified.
+        # This ensures IPs are always current without manual admin intervention,
+        # and is required once DISABLE_IP_WHITELIST is eventually turned off.
+        add_to_whitelist(client_ip, f'{username} (auto: login {datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")})')
         socketio.emit('camera_access', {'accessible': True, 'reason': '6/6 consensus granted'})
     socketio.emit('login_attempt', {'username': username, 'ip': client_ip, 'result': result, 'votes': votes})
     return jsonify({'granted': granted, 'user': username, 'error': '' if granted else 'authentication failed', 'steps': steps, 'votes': votes})
