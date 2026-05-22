@@ -602,16 +602,42 @@ function connectCam(camId){
   _doCamConnect(camId,url);
 }
 
-function _doCamConnect(camId,url){
+async function _doCamConnect(camId,url){
   _camUrls[camId]=url;
   _camImgErrors[camId]=0;
   const img=document.getElementById(`cam${camId}-img`);
-  const isHttp=url.toLowerCase().startsWith('http');
 
-  // HTTP MJPEG (ngrok): load the URL directly in <img>.
-  // ngrok-skip-browser-warning is sent by webcam_stream.py's after_request hook.
-  // RTSP: relay through our server endpoint which handles cv2/ffmpeg.
-  const src=isHttp?url:`/api/camera/${camId}/stream`;
+  showToast(`📷 Cam ${camId} connecting...`,'info',2000);
+
+  // Step 1: Register URL with the server FIRST.
+  // For ngrok/HTTP streams, the server must proxy the request so it can inject
+  // the 'ngrok-skip-browser-warning' request header — browsers loading the ngrok
+  // URL directly in <img> don't send that header, so ngrok returns an HTML
+  // warning page instead of the MJPEG stream.
+  try{
+    const d=await fetch('/api/camera/connect',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({cam_id:camId,url})
+    }).then(r=>r.json());
+    if(!d.success){
+      showToast(`Cam ${camId} register failed: ${d.error||'unknown'}`,'error',5000);
+      _camUrls[camId]='';
+      return;
+    }
+    showToast(`📷 Cam ${camId} registered: ${d.masked_url}`,'success',3000);
+  }catch(e){
+    console.warn(`Cam ${camId} server register error:`,e);
+    showToast(`Cam ${camId}: could not reach server — is Railway running?`,'error',5000);
+    _camUrls[camId]='';
+    return;
+  }
+
+  // Step 2: Always stream through the Railway server proxy endpoint.
+  // Server-side relay adds 'ngrok-skip-browser-warning' to the upstream request,
+  // which is required for ngrok URLs. RTSP is also handled server-side (cv2/ffmpeg).
+  // Direct <img src="ngrok-url"> is intentionally NOT used — see note above.
+  const src=`/api/camera/${camId}/stream`;
 
   img.onerror=null;
   img.onload=null;
@@ -623,7 +649,6 @@ function _doCamConnect(camId,url){
       showToast(`Cam ${camId}: stream failed — check ngrok URL or run webcam_stream.py`,'error',6000);
       disconnectCam(camId);
     }
-    // Don't force reload on transient errors — browser will retry multipart stream
   };
   img.onload=()=>{ _camImgErrors[camId]=0; };
 
@@ -631,23 +656,6 @@ function _doCamConnect(camId,url){
   document.getElementById(`cam${camId}-live`).style.display='block';
   document.getElementById(`cam${camId}-disconnect`).style.display='inline-block';
   _updateCamBadge();
-  showToast(`📷 Cam ${camId} connecting...`,'info',2000);
-
-  // Register URL with server (for logging + RTSP relay on server side).
-  // Fire-and-forget — HTTP streams work without this since <img> is direct.
-  fetch('/api/camera/connect',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cam_id:camId,url})
-  }).then(r=>r.json()).then(d=>{
-    if(d.success) showToast(`📷 Cam ${camId} registered: ${d.masked_url}`,'success',3000);
-    else showToast(`Cam ${camId} server register failed: ${d.error||'unknown'}`,'warning',4000);
-  }).catch(e=>{
-    // Server registration failed — for HTTP/ngrok cams this is non-fatal
-    // (stream plays directly in <img>), but warn the user.
-    console.warn(`Cam ${camId} server register error:`,e);
-    showToast(`Cam ${camId}: stream started (server registration failed — RTSP relay won't work)`,'warning',5000);
-  });
 }
 
 function disconnectCam(camId){
