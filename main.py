@@ -384,6 +384,19 @@ def token_cleanup_worker():
     while True:
         try: cleanup_used_tokens()
         except Exception as e: print(f"Token cleanup: {e}")
+        # Expire pending votes
+        now = time.time()
+        with _votes_lock:
+            expired = [vid for vid, v in _pending_votes.items()
+                      if not v['executed'] and not v['cancelled'] and now > v['expires_at']]
+            for vid in expired:
+                v = _pending_votes[vid]
+                v['cancelled'] = True
+                socketio.emit('vote_resolved', {
+                    'vote_id': vid, 'result': 'expired',
+                    'description': _vote_description(v['action'], v['args']),
+                    'requester': v['requester']
+                })
         now = time.time()
         with _public_rate_lock:
             stale = [ip for ip, ts in _public_rate.items() if not ts or now - max(ts) > 120]
@@ -559,7 +572,7 @@ def log_all_threats(username, ip, data, result, votes, user_agent='', csrf_faile
 # ══════════════════════════════════════════════════
 _ctx_cache: dict = {'data': None, 'ts': 0}
 _ctx_lock = threading.Lock()
-CTX_TTL = 10
+CTX_TTL = 30  # seconds — increased from 10 to reduce DB queries on rapid chat
 
 def _get_system_context():
     now = time.time()
@@ -606,38 +619,112 @@ def _get_system_context():
         return _ctx_cache['data'] or f"(context error: {e})"
 
 GUARD_TOOLS = [
-    {'type': 'function', 'function': {'name': 'block_ip', 'description': 'Block an IP for 30 minutes.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
-    {'type': 'function', 'function': {'name': 'forgive_ip', 'description': 'Remove IP from blacklist and clear rate limit.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
-    {'type': 'function', 'function': {'name': 'clear_rate_limit', 'description': 'Clear failed login attempts for an IP.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
-    {'type': 'function', 'function': {'name': 'add_whitelist', 'description': 'Add an IP to the whitelist.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}, 'label': {'type': 'string'}}, 'required': ['ip']}}},
-    {'type': 'function', 'function': {'name': 'remove_whitelist', 'description': 'Remove an IP from the whitelist.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
-    {'type': 'function', 'function': {'name': 'kick_session', 'description': 'Force logout a specific user. ONLY when admin explicitly names the person.', 'parameters': {'type': 'object', 'properties': {'username': {'type': 'string'}}, 'required': ['username']}}},
-    {'type': 'function', 'function': {'name': 'connect_camera', 'description': 'Connect a camera stream URL at runtime.', 'parameters': {'type': 'object', 'properties': {'cam_id': {'type': 'integer'}, 'url': {'type': 'string'}}, 'required': ['cam_id', 'url']}}},
+    {'type': 'function', 'function': {'name': 'block_ip', 'description': 'Block a specific IP address for 30 minutes. REQUIRES: explicit IP in x.x.x.x format from user message. Do NOT infer IP from context.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string', 'description': 'Must be explicit IPv4 address from user message'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'forgive_ip', 'description': 'Remove a specific IP from blacklist. REQUIRES: explicit IP in x.x.x.x format and explicit forgive/unblock command from user.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'clear_rate_limit', 'description': 'Clear rate limit for a specific IP. REQUIRES: explicit IP in x.x.x.x format AND explicit clear/reset command. Asking IF it was cleared is NOT a command.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'add_whitelist', 'description': 'Add a specific IP to whitelist. REQUIRES: explicit IP and explicit add/whitelist command.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}, 'label': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'remove_whitelist', 'description': 'Remove a specific IP from whitelist. REQUIRES: explicit IP and explicit remove command.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
+    {'type': 'function', 'function': {'name': 'kick_session', 'description': 'Force logout a specific user. ONLY callable by admin (Gian). REQUIRES: explicit username and explicit kick command. NEVER call if sender is not admin.', 'parameters': {'type': 'object', 'properties': {'username': {'type': 'string'}}, 'required': ['username']}}},
+    {'type': 'function', 'function': {'name': 'connect_camera', 'description': 'Connect a camera stream URL. REQUIRES: full URL starting with https:// or rtsp://', 'parameters': {'type': 'object', 'properties': {'cam_id': {'type': 'integer'}, 'url': {'type': 'string'}}, 'required': ['cam_id', 'url']}}},
 ]
 
-def _run_tool(tool_name, args):
+# ══════════════════════════════════════════════════
+# MAJORITY VOTE SYSTEM
+# Sensitive Guard AI actions require 2/7 approvals
+# Requester counts as 1 — needs 1 more from any teammate
+# ══════════════════════════════════════════════════
+_pending_votes: dict = {}
+_votes_lock = threading.Lock()
+VOTE_TIMEOUT  = 300   # 5 minutes
+VOTES_REQUIRED = 2
+VOTEABLE_ACTIONS = {'block_ip','forgive_ip','clear_rate_limit','add_whitelist','remove_whitelist','kick_session'}
+
+def _vote_description(action, args):
+    if action == 'block_ip':         return f"Block {args.get('ip')} for 30 minutes"
+    if action == 'forgive_ip':        return f"Unblock {args.get('ip')} from blacklist"
+    if action == 'clear_rate_limit':  return f"Clear rate limit for {args.get('ip')}"
+    if action == 'add_whitelist':     return f"Add {args.get('ip')} to whitelist ({args.get('label','')})"
+    if action == 'remove_whitelist':  return f"Remove {args.get('ip')} from whitelist"
+    if action == 'kick_session':      return f"Kick {args.get('username')} from system"
+    return action
+
+def _create_vote(action, args, requester):
+    vote_id = secrets.token_hex(8)
+    now = time.time()
+    vote = {
+        'id': vote_id, 'action': action, 'args': args,
+        'requester': requester,
+        'approvals': {requester},  # requester auto-approves
+        'rejections': set(),
+        'created_at': now, 'expires_at': now + VOTE_TIMEOUT,
+        'executed': False, 'cancelled': False
+    }
+    with _votes_lock:
+        _pending_votes[vote_id] = vote
+    desc = _vote_description(action, args)
+    socketio.emit('vote_pending', {
+        'vote_id': vote_id, 'action': action, 'args': args,
+        'description': desc, 'requester': requester,
+        'approvals': list(vote['approvals']),
+        'approvals_count': 1, 'required': VOTES_REQUIRED,
+        'expires_at': now + VOTE_TIMEOUT
+    })
+    return vote_id, desc
+
+def _execute_action(action, args, sender='system'):
+    """Directly executes an action — called after vote passes or for non-voteable actions."""
     try:
-        if tool_name == 'block_ip':
-            ip = args['ip']; add_to_blacklist(ip, 'temporary', 1800); socketio.emit('guard_action', {'action': 'block_ip', 'ip': ip}); return f"Blocked {ip} for 30 min."
-        elif tool_name == 'forgive_ip':
-            ip = args['ip']; forgive_ip(ip); clear_rate_limit(ip); socketio.emit('guard_action', {'action': 'forgive_ip', 'ip': ip}); return f"Forgiven {ip}."
-        elif tool_name == 'clear_rate_limit':
-            ip = args['ip']; clear_rate_limit(ip); socketio.emit('guard_action', {'action': 'clear_rate_limit', 'ip': ip}); return f"Rate limit cleared for {ip}."
-        elif tool_name == 'add_whitelist':
-            ip = args['ip']; add_to_whitelist(ip, args.get('label', 'Guard approved')); socketio.emit('guard_action', {'action': 'add_whitelist', 'ip': ip}); return f"Added {ip} to whitelist."
-        elif tool_name == 'remove_whitelist':
-            ip = args['ip']; remove_from_whitelist(ip); socketio.emit('guard_action', {'action': 'remove_whitelist', 'ip': ip}); return f"Removed {ip} from whitelist."
-        elif tool_name == 'kick_session':
-            u = args['username']; delete_session(u); socketio.emit('session_kicked', {'username': u}); log_admin('kick_session', u); return f"Kicked {u}."
-        elif tool_name == 'connect_camera':
+        if action == 'block_ip':
+            ip = args['ip']; add_to_blacklist(ip, 'temporary', 1800)
+            log_admin(f'guard:block_ip', f'{ip} (by {sender})')
+            socketio.emit('guard_action', {'action': 'block_ip', 'ip': ip})
+            return f"Blocked {ip} for 30 min."
+        elif action == 'forgive_ip':
+            ip = args['ip']; forgive_ip(ip); clear_rate_limit(ip)
+            log_admin(f'guard:forgive_ip', f'{ip} (by {sender})')
+            socketio.emit('guard_action', {'action': 'forgive_ip', 'ip': ip})
+            return f"Forgiven {ip}."
+        elif action == 'clear_rate_limit':
+            ip = args['ip']; clear_rate_limit(ip)
+            log_admin(f'guard:clear_rate_limit', f'{ip} (by {sender})')
+            socketio.emit('guard_action', {'action': 'clear_rate_limit', 'ip': ip})
+            return f"Rate limit cleared for {ip}."
+        elif action == 'add_whitelist':
+            ip = args['ip']; add_to_whitelist(ip, args.get('label', f'Guard approved by {sender}'))
+            log_admin(f'guard:add_whitelist', f'{ip} (by {sender})')
+            socketio.emit('guard_action', {'action': 'add_whitelist', 'ip': ip})
+            return f"Added {ip} to whitelist."
+        elif action == 'remove_whitelist':
+            ip = args['ip']; remove_from_whitelist(ip)
+            log_admin(f'guard:remove_whitelist', f'{ip} (by {sender})')
+            socketio.emit('guard_action', {'action': 'remove_whitelist', 'ip': ip})
+            return f"Removed {ip} from whitelist."
+        elif action == 'kick_session':
+            u = args['username']; delete_session(u)
+            log_admin(f'guard:kick_session', f'{u} (by {sender})')
+            socketio.emit('session_kicked', {'username': u})
+            return f"Kicked {u}."
+        elif action == 'connect_camera':
             cam_id = int(args['cam_id']); url = args['url']
-            if not re.match(r'^(rtsp|rtsps|http|https)://', url, re.IGNORECASE): return "Invalid URL format."
+            if not re.match(r'^(rtsp|rtsps|http|https)://', url, re.IGNORECASE): return "Invalid URL."
             _dynamic_cams[cam_id] = url; masked = _mask_cam_url(url)
-            log_admin('camera_connect', f'cam{cam_id} → {masked}')
+            log_admin('guard:camera_connect', f'cam{cam_id} → {masked} (by {sender})')
             socketio.emit('camera_connected', {'cam_id': cam_id, 'masked_url': masked})
             return f"Camera {cam_id} connected: {masked}"
-        else: return f"Unknown tool: {tool_name}"
-    except Exception as e: return f"Tool error: {e}"
+        return f"Unknown action: {action}"
+    except Exception as e: return f"Action error: {e}"
+
+def _run_tool(tool_name, args, sender='unknown'):
+    """Called by Guard AI. Creates vote for sensitive actions, executes non-sensitive directly."""
+    if tool_name in VOTEABLE_ACTIONS:
+        vote_id, desc = _create_vote(tool_name, args, sender)
+        return (f"⏳ VOTE CREATED — {desc}\n"
+                f"Vote ID: {vote_id[:8]}\n"
+                f"Approvals: 1/{VOTES_REQUIRED} ({sender} requested)\n"
+                f"Waiting for {VOTES_REQUIRED-1} more teammate approval.\n"
+                f"Teammates will see Approve/Reject buttons in this chat.\n"
+                f"Expires in 5 minutes.")
+    return _execute_action(tool_name, args, sender)
 
 GUARD_SYSTEM_PROMPT = """You are NETAD Guard — AI security officer for the NETAD multi-layer camera security system. Built by a 7-person team in the Philippines.
 
@@ -702,7 +789,7 @@ DEMO ANSWER — "Can Sir log in with the password?":
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    if not public_rate_ok(request.remote_addr, max_per_min=10):
+    if not public_rate_ok(request.remote_addr, max_per_min=5):
         return jsonify({'error': 'rate limited'}), 429
     d   = request.get_json()
     msg = d.get('message', '').strip()
@@ -715,7 +802,9 @@ def api_chat():
     socketio.emit('chat_message', {'role': 'user', 'message': msg, 'sender': sender})
 
     history  = get_chat_logs(16)
-    messages = [{'role': 'system', 'content': GUARD_SYSTEM_PROMPT + "\n\n" + _get_system_context()}]
+    # Include sender identity so Guard AI knows who is issuing commands
+    sender_context = f"\n=== CURRENT USER ===\nSender: {sender} | Role: {'admin' if sender == 'admin' else 'member'}\nOnly admin (Gian) can use kick_session tool.\n"
+    messages = [{'role': 'system', 'content': GUARD_SYSTEM_PROMPT + sender_context + "\n" + _get_system_context()}]
     for m in history:
         if m.get('role') == 'system': continue
         messages.append({'role': m.get('role', 'user'), 'content': m.get('message', '')})
@@ -735,7 +824,7 @@ def api_chat():
                 'tool_calls': [{'id': tc.id, 'type': 'function', 'function': {'name': tc.function.name, 'arguments': tc.function.arguments}} for tc in mo.tool_calls]})
             for tc in mo.tool_calls:
                 args   = json.loads(tc.function.arguments)
-                result = _run_tool(tc.function.name, args)
+                result = _run_tool(tc.function.name, args, sender=sender)
                 actions.append({'tool': tc.function.name, 'args': args, 'result': result})
                 messages.append({'role': 'tool', 'tool_call_id': tc.id, 'content': result})
                 with _ctx_lock: _ctx_cache['ts'] = 0
@@ -749,6 +838,88 @@ def api_chat():
         return jsonify({'reply': reply, 'action_result': actions})
     except Exception as e:
         return jsonify({'reply': f'Guard unavailable: {e}'})
+
+@app.route('/api/vote/approve', methods=['POST'])
+def api_vote_approve():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    voter    = session.get('user')
+    vote_id  = (request.get_json() or {}).get('vote_id', '')
+    should_execute = False
+    vote_snap = None
+    with _votes_lock:
+        vote = _pending_votes.get(vote_id)
+        if not vote:                       return jsonify({'error': 'Vote not found'}), 404
+        if vote['executed']:               return jsonify({'error': 'Already executed'}), 400
+        if vote['cancelled']:              return jsonify({'error': 'Already cancelled'}), 400
+        if time.time() > vote['expires_at']: return jsonify({'error': 'Vote expired'}), 400
+        if voter == vote['requester']:     return jsonify({'error': 'Cannot approve your own request'}), 400
+        if voter in vote['rejections']:    return jsonify({'error': 'Already rejected'}), 400
+        vote['approvals'].add(voter)
+        if len(vote['approvals']) >= VOTES_REQUIRED:
+            vote['executed'] = True
+            should_execute = True
+        vote_snap = {'action': vote['action'], 'args': vote['args'],
+                     'requester': vote['requester'], 'approvals': list(vote['approvals'])}
+    if should_execute:
+        result = _execute_action(vote_snap['action'], vote_snap['args'], vote_snap['requester'])
+        socketio.emit('vote_resolved', {
+            'vote_id': vote_id, 'result': 'approved',
+            'description': _vote_description(vote_snap['action'], vote_snap['args']),
+            'approved_by': voter, 'requester': vote_snap['requester'],
+            'tool_result': result
+        })
+        log_admin(f'vote:approved', f"{vote_snap['action']} — approved by {voter}, requested by {vote_snap['requester']}")
+        loadMetrics_hint = vote_snap['action'] in ('block_ip','forgive_ip','add_whitelist','remove_whitelist')
+        return jsonify({'success': True, 'executed': True, 'result': result})
+    else:
+        socketio.emit('vote_update', {
+            'vote_id': vote_id,
+            'approvals': vote_snap['approvals'],
+            'approvals_count': len(vote_snap['approvals']),
+            'required': VOTES_REQUIRED
+        })
+        return jsonify({'success': True, 'executed': False})
+
+@app.route('/api/vote/reject', methods=['POST'])
+def api_vote_reject():
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    voter   = session.get('user')
+    vote_id = (request.get_json() or {}).get('vote_id', '')
+    with _votes_lock:
+        vote = _pending_votes.get(vote_id)
+        if not vote:             return jsonify({'error': 'Vote not found'}), 404
+        if vote['executed']:     return jsonify({'error': 'Already executed'}), 400
+        if vote['cancelled']:    return jsonify({'error': 'Already cancelled'}), 400
+        vote['cancelled'] = True
+        vote['rejections'].add(voter)
+        desc = _vote_description(vote['action'], vote['args'])
+        requester = vote['requester']
+    socketio.emit('vote_resolved', {
+        'vote_id': vote_id, 'result': 'rejected',
+        'description': desc, 'rejected_by': voter, 'requester': requester
+    })
+    log_admin('vote:rejected', f"{desc} — rejected by {voter}")
+    return jsonify({'success': True})
+
+@app.route('/api/vote/pending')
+def api_vote_pending():
+    """Returns all active pending votes — for restoring state on page load."""
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    now = time.time()
+    result = []
+    with _votes_lock:
+        for v in _pending_votes.values():
+            if not v['executed'] and not v['cancelled'] and now < v['expires_at']:
+                result.append({
+                    'vote_id': v['id'], 'action': v['action'], 'args': v['args'],
+                    'description': _vote_description(v['action'], v['args']),
+                    'requester': v['requester'],
+                    'approvals': list(v['approvals']),
+                    'approvals_count': len(v['approvals']),
+                    'required': VOTES_REQUIRED,
+                    'expires_at': v['expires_at']
+                })
+    return jsonify(result)
 
 @app.route('/api/chat/history')
 def api_chat_history():
