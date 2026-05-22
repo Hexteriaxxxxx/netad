@@ -22,6 +22,15 @@ import os, threading, time, secrets, json, base64, re, datetime
 
 load_dotenv()
 
+# ── Read critical env vars once at startup and log their status ──
+# Reading inside request handlers via os.environ.get() can miss vars
+# that Railway injects before process start but after load_dotenv().
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '').strip()
+print(f"[NETAD] GROQ_API_KEY : {'SET (' + str(len(GROQ_API_KEY)) + ' chars)' if GROQ_API_KEY else '*** MISSING — Guard AI disabled ***'}")
+print(f"[NETAD] ALLOWED_ORIGIN: {os.environ.get('ALLOWED_ORIGIN', '*** MISSING ***')}")
+print(f"[NETAD] DATABASE_URL  : {'SET' if os.environ.get('DATABASE_URL') else '*** MISSING ***'}")
+print(f"[NETAD] SECRET_KEY    : {'SET' if os.environ.get('SECRET_KEY') else '*** MISSING ***'}")
+
 app = Flask(__name__)
 # Debug — print all env vars on startup (set DEBUG_ENV=true to enable)
 if os.environ.get('DEBUG_ENV'):
@@ -492,7 +501,7 @@ def _groq_analyze_async(threat):
             print(f"[Groq] semaphore full — dropped analysis for {threat.get('type','?')} from {threat.get('ip','?')}")
             return
         try:
-            key = os.environ.get('GROQ_API_KEY', '')
+            key = GROQ_API_KEY
             if not key: return
             from groq import Groq
             client = Groq(api_key=key)
@@ -657,8 +666,8 @@ def api_chat():
     d   = request.get_json()
     msg = d.get('message', '').strip()
     if not msg: return jsonify({'error': 'empty'})
-    key = os.environ.get('GROQ_API_KEY')
-    if not key: return jsonify({'reply': 'Groq API key not configured.'})
+    key = GROQ_API_KEY
+    if not key: return jsonify({'reply': 'Guard AI unavailable — GROQ_API_KEY not configured on Railway.'})
 
     sender = session.get('user', 'unknown')
     add_chat_log('user', msg, sender=sender)
