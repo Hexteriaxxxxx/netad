@@ -6,7 +6,7 @@ from flask_socketio import SocketIO, emit
 from werkzeug.middleware.proxy_fix import ProxyFix
 from block import Block
 from database import (
-    add_log, get_logs_today, get_sessions, delete_session,
+    add_log, get_logs_today, get_logs_today_count, get_sessions, delete_session,
     get_blacklist, add_to_blacklist, forgive_ip,
     get_whitelist, add_to_whitelist, remove_from_whitelist,
     get_ai_logs, create_session, update_session_heartbeat,
@@ -868,6 +868,26 @@ def node_status():
 def api_logs():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_logs_today(50)])
+
+@app.route('/api/metrics')
+def api_metrics():
+    """Dedicated metrics endpoint — returns real counts, not limited by display caps."""
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    try:
+        attempts   = get_logs_today_count()
+        blacklist  = get_blacklist()
+        ai_logs    = get_ai_logs(20)
+        sessions   = get_sessions()
+        devices    = get_all_devices()
+        return jsonify({
+            'attempts':  attempts,
+            'blocked':   len(blacklist),
+            'ai_alerts': len([a for a in ai_logs if a.get('flagged')]),
+            'online':    len([s for s in sessions if s.get('online')]),
+            'pending':   len([d for d in devices if d.get('status') == 'pending'])
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/blacklist')
 def api_blacklist():

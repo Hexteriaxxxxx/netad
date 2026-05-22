@@ -228,12 +228,24 @@ def get_logs_today(limit=50):
         cur.execute(
             """
             SELECT * FROM logs
-            WHERE timestamp >= CURRENT_DATE
+            WHERE timestamp >= date_trunc('day', NOW() AT TIME ZONE 'Asia/Manila') AT TIME ZONE 'Asia/Manila'
             ORDER BY timestamp DESC LIMIT %s
             """,
             (limit,)
         )
         return cur.fetchall()
+
+def get_logs_today_count():
+    """Returns actual total count of today's logs — not capped by display limit."""
+    with get_db() as conn:
+        cur = get_cursor(conn)
+        cur.execute(
+            """
+            SELECT COUNT(*) as c FROM logs
+            WHERE timestamp >= date_trunc('day', NOW() AT TIME ZONE 'Asia/Manila') AT TIME ZONE 'Asia/Manila'
+            """
+        )
+        return cur.fetchone()['c']
 
 # ── SESSIONS ──
 def create_session(username, ip, role, token):

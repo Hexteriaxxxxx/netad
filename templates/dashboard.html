@@ -809,22 +809,16 @@ fetchLayerStatus();setInterval(fetchLayerStatus,30000);
 // ── METRICS ──
 async function loadMetrics(){
   try{
-    const[logs,bl,ai,sess,devs]=await Promise.all([
-      fetch('/api/logs').then(r=>r.json()),
-      fetch('/api/blacklist').then(r=>r.json()),
-      fetch('/api/ai-logs').then(r=>r.json()),
-      fetch('/api/sessions').then(r=>r.json()),
-      fetch('/api/devices').then(r=>r.json()),
-    ]);
-    document.getElementById('m-attempts').textContent=logs.length;
-    document.getElementById('m-blocked').textContent=bl.length;
-    document.getElementById('m-ai').textContent=ai.filter(a=>a.flagged).length;
-    document.getElementById('m-online').textContent=sess.filter(s=>s.online).length;
-    const pending=devs.filter(d=>d.status==='pending').length;
-    document.getElementById('m-pending').textContent=pending;
-    if(pending>0){
+    const m=await fetch('/api/metrics').then(r=>r.json());
+    if(m.error) return;
+    document.getElementById('m-attempts').textContent=m.attempts;
+    document.getElementById('m-blocked').textContent=m.blocked;
+    document.getElementById('m-ai').textContent=m.ai_alerts;
+    document.getElementById('m-online').textContent=m.online;
+    document.getElementById('m-pending').textContent=m.pending;
+    if(m.pending>0){
       document.getElementById('pending-alert').classList.add('show');
-      document.getElementById('pending-alert-text').textContent=`${pending} device${pending>1?'s':''} pending approval`;
+      document.getElementById('pending-alert-text').textContent=`${m.pending} device${m.pending>1?'s':''} pending approval`;
       document.getElementById('tab-badge-devices').classList.add('show');
     }
   }catch(e){}
