@@ -1,4 +1,5 @@
 # main.py — NETAD Security System (Railway-compatible, optimized)
+# BUILD ID: NETAD-2025-05-23-FINAL
 
 from flask import Flask, request, jsonify, render_template, session, redirect, Response
 from flask_socketio import SocketIO, emit
