@@ -20,7 +20,7 @@ python webcam_stream.py
 **If using RTSP IP cam:**
 ```powershell
 cd C:\Users\ADMIN1\Downloads\files
-$env:CAMERA_SOURCE = "rtsp://DexterMorgan:Th3_84y_H4r80r_8Utch3r@192.168.68.120:554/stream1"
+$env:CAMERA_SOURCE = "rtsp://USERNAME:PASSWORD@CAMERA_IP:554/stream1"
 python webcam_stream.py
 ```
 
@@ -96,7 +96,7 @@ Copy the `https://xxxx.ngrok-free.app` URL.
 ## Quick Reference
 
 ```
-RTSP cam URL:   rtsp://DexterMorgan:Th3_84y_H4r80r_8Utch3r@192.168.68.120:554/stream1
+RTSP cam URL:   rtsp://USERNAME:PASSWORD@CAMERA_IP:554/stream1
 Stream server:  http://localhost:8080
 Stream path:    http://localhost:8080/video
 ngrok tunnel:   ngrok http 8080

@@ -23,13 +23,13 @@ import os, threading, time, secrets, json, base64, re, datetime
 load_dotenv()
 
 app = Flask(__name__)
-# Debug — print all env vars on startup
-import sys
-print("=== NETAD ENV DEBUG ===")
-for k in ['SECRET_KEY','DATABASE_URL','ALLOWED_ORIGIN','GROQ_API_KEY','PORT','HOST']:
-    v = os.environ.get(k,'')
-    print(f"  {k}: {'SET (' + str(len(v)) + ' chars)' if v else 'MISSING'}")
-print("=== END DEBUG ===")
+# Debug — print all env vars on startup (set DEBUG_ENV=true to enable)
+if os.environ.get('DEBUG_ENV'):
+    print("=== NETAD ENV DEBUG ===")
+    for k in ['SECRET_KEY','DATABASE_URL','ALLOWED_ORIGIN','GROQ_API_KEY','PORT','HOST']:
+        v = os.environ.get(k,'')
+        print(f"  {k}: {'SET (' + str(len(v)) + ' chars)' if v else 'MISSING'}")
+    print("=== END DEBUG ===")
 
 app.secret_key = os.environ.get('SECRET_KEY') or 'fallback_dev_key_change_in_prod'
 if not os.environ.get('SECRET_KEY'):
@@ -376,7 +376,7 @@ def _get_valid_users():
             _valid_users_cache['ts'] = now
         return users
     except Exception:
-        return _valid_users_cache['users'] or {'admin', 'kevin', 'josiah', 'jm', 'karl', 'nico', 'lj'}
+        return _valid_users_cache['users'] or set()
 
 def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed=False):
     threats = []
