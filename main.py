@@ -97,13 +97,13 @@ def generate_camera_stream(cam_id):
     if is_http:
         import requests
         while True:
-            if not is_consensus_granted(): break
+            if not is_consensus_granted() and cam_id not in _dynamic_cams: break
             try:
                 with requests.get(url, stream=True, timeout=10,
                                   headers={'ngrok-skip-browser-warning': 'true'}) as r:
                     buf = b''
                     for chunk in r.iter_content(chunk_size=4096):
-                        if not is_consensus_granted(): break
+                        if not is_consensus_granted() and cam_id not in _dynamic_cams: break
                         buf += chunk
                         start = buf.find(b'\xff\xd8')
                         end   = buf.find(b'\xff\xd9')
@@ -113,7 +113,7 @@ def generate_camera_stream(cam_id):
                             yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
             except Exception as e:
                 print(f"HTTP cam {cam_id} error: {e}")
-                if not is_consensus_granted(): break
+                if not is_consensus_granted() and cam_id not in _dynamic_cams: break
                 time.sleep(3)
     else:
         try:
@@ -121,7 +121,7 @@ def generate_camera_stream(cam_id):
             cap = cv2.VideoCapture(url)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             while True:
-                if not is_consensus_granted(): break
+                if not is_consensus_granted() and cam_id not in _dynamic_cams: break
                 ret, frame = cap.read()
                 if not ret:
                     cap.release(); time.sleep(2)
@@ -138,7 +138,9 @@ def generate_camera_stream(cam_id):
 def camera_stream(cam_id):
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     if not get_camera_url(cam_id): return jsonify({'error': 'not configured'}), 503
-    if not is_consensus_granted(): return jsonify({'error': 'consensus not met'}), 403
+    # Allow stream if: (a) consensus granted, OR (b) user explicitly connected a dynamic cam
+    if not is_consensus_granted() and cam_id not in _dynamic_cams:
+        return jsonify({'error': 'consensus not met'}), 403
     return Response(generate_camera_stream(cam_id), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/api/camera/connect', methods=['POST'])

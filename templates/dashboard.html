@@ -311,7 +311,7 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
             <button class="cam-connect-btn" onclick="connectCam(1)">📷 CONNECT</button>
             <button class="cam-disconnect-btn" onclick="disconnectCam(1)" id="cam1-disconnect" style="display:none;">✕ DISC</button>
           </div>
-          <div class="cam-url-hint">ngrok HTTP/MJPEG loads directly in browser · RTSP relayed via server</div>
+          <div class="cam-url-hint">ngrok HTTP/MJPEG loads directly · RTSP relayed via server</div>
         </div>
 
         <!-- Camera 2 -->
@@ -339,7 +339,7 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
           <div class="cam-url-hint">Optional second camera</div>
         </div>
 
-        <div style="font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:10px;text-align:center;">Unlocks when all 6/6 nodes agree + approved device</div>
+        <div style="font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:10px;text-align:center;" id="cam-footer-hint">Paste ngrok URL above to connect · RTSP also supported</div>
       </div>
     </div>
 
@@ -495,7 +495,10 @@ socket.on('chat_message',d=>{
   else if(d.role==='user'&&d.sender&&d.sender!=='{{ user }}') appendChatMsg('other-user',d.message,null,d.sender);
   else if(d.role==='system') appendChatMsg('system-alert',d.message);
 });
-socket.on('camera_access',d=>{setCameraState(d.accessible);});
+socket.on('camera_access',d=>{
+  // Server fired consensus event — update badge, but don't touch manually-connected cams
+  setCameraState(d.accessible);
+});
 socket.on('camera_connected',d=>{
   showToast(`📷 Camera ${d.cam_id} connected: ${d.masked_url}`,'success',5000);
   checkCameraStatus();
@@ -558,18 +561,45 @@ function toggleCam(id){
   if(btn)btn.textContent=expanded?'⛶ COLLAPSE':'⛶ EXPAND';
 }
 
-// ── CAMERA — single unified connect/disconnect ──
-// Supports: HTTP MJPEG (ngrok) loaded directly in <img>,
-//           RTSP relayed via /api/camera/<id>/stream
+// ══════════════════════════════════════════════════
+// CAMERA — connect / disconnect / status
+// ══════════════════════════════════════════════════
+// _camUrls tracks what URL (if any) is currently active per cam.
+// '' means disconnected. HTTP = load direct in <img>. RTSP = relay via server.
 const _camUrls = {1:'',2:''};
 const _camImgErrors = {1:0,2:0};
 const MAX_IMG_ERRORS = 3;
 
-function connectCam(camId) {
-  const input = document.getElementById('cam' + camId + '-url-input');
-  const url = input ? input.value.trim() : '';
-  if (!url) { showToast('Paste a camera URL first', 'error'); return; }
-  _doCamConnect(camId, url);
+// ── updateCamBadge ──
+// Derives badge text from current state without ever looking at consensus.
+// Badge lifecycle: LOCKED → READY (logged in, no url) → LIVE (stream active)
+function _updateCamBadge(){
+  const anyLive=Object.values(_camUrls).some(u=>u);
+  const badge=document.getElementById('cam-badge');
+  if(anyLive){
+    badge.textContent='LIVE';
+    badge.style.color='var(--accent)';
+    badge.style.borderColor='rgba(0,229,160,0.3)';
+  } else if(_sessionReady){
+    badge.textContent='READY · PASTE URL';
+    badge.style.color='var(--amber)';
+    badge.style.borderColor='rgba(255,179,68,0.3)';
+  } else {
+    badge.textContent='LOCKED';
+    badge.style.color='';
+    badge.style.borderColor='';
+  }
+}
+
+// Whether the user has a valid login session (consensus was granted).
+// Set to true on login socket event or confirmed by /api/camera/status.
+let _sessionReady = false;
+
+function connectCam(camId){
+  const input=document.getElementById('cam'+camId+'-url-input');
+  const url=input?input.value.trim():'';
+  if(!url){showToast('Paste a camera URL first','error');return;}
+  _doCamConnect(camId,url);
 }
 
 function _doCamConnect(camId,url){
@@ -578,9 +608,11 @@ function _doCamConnect(camId,url){
   const img=document.getElementById(`cam${camId}-img`);
   const isHttp=url.toLowerCase().startsWith('http');
 
-  // HTTP MJPEG: load directly — NO cache-busting timestamp (causes reload loops)
-  // RTSP: relay via server
+  // HTTP MJPEG (ngrok): load the URL directly in <img>.
+  // ngrok-skip-browser-warning is sent by webcam_stream.py's after_request hook.
+  // RTSP: relay through our server endpoint which handles cv2/ffmpeg.
   const src=isHttp?url:`/api/camera/${camId}/stream`;
+
   img.onerror=null;
   img.onload=null;
   img.src=src;
@@ -588,25 +620,34 @@ function _doCamConnect(camId,url){
   img.onerror=()=>{
     _camImgErrors[camId]++;
     if(_camImgErrors[camId]>=MAX_IMG_ERRORS){
-      showToast(`Cam ${camId}: stream failed — check URL`,'error',5000);
+      showToast(`Cam ${camId}: stream failed — check ngrok URL or run webcam_stream.py`,'error',6000);
       disconnectCam(camId);
     }
-    // else: browser will retry naturally — don't force reload
+    // Don't force reload on transient errors — browser will retry multipart stream
   };
-
   img.onload=()=>{ _camImgErrors[camId]=0; };
 
   document.getElementById(`cam${camId}-locked`).style.display='none';
   document.getElementById(`cam${camId}-live`).style.display='block';
   document.getElementById(`cam${camId}-disconnect`).style.display='inline-block';
-  document.getElementById('cam-badge').textContent='LIVE';
-  showToast(`📷 Cam ${camId} connected`,'success');
+  _updateCamBadge();
+  showToast(`📷 Cam ${camId} connecting...`,'info',2000);
 
+  // Register URL with server (for logging + RTSP relay on server side).
+  // Fire-and-forget — HTTP streams work without this since <img> is direct.
   fetch('/api/camera/connect',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({cam_id:camId,url})
-  }).catch(()=>{});
+  }).then(r=>r.json()).then(d=>{
+    if(d.success) showToast(`📷 Cam ${camId} registered: ${d.masked_url}`,'success',3000);
+    else showToast(`Cam ${camId} server register failed: ${d.error||'unknown'}`,'warning',4000);
+  }).catch(e=>{
+    // Server registration failed — for HTTP/ngrok cams this is non-fatal
+    // (stream plays directly in <img>), but warn the user.
+    console.warn(`Cam ${camId} server register error:`,e);
+    showToast(`Cam ${camId}: stream started (server registration failed — RTSP relay won't work)`,'warning',5000);
+  });
 }
 
 function disconnectCam(camId){
@@ -619,8 +660,7 @@ function disconnectCam(camId){
   document.getElementById(`cam${camId}-locked`).style.display='flex';
   document.getElementById(`cam${camId}-live`).style.display='none';
   document.getElementById(`cam${camId}-disconnect`).style.display='none';
-  const anyLive=Object.values(_camUrls).some(u=>u);
-  document.getElementById('cam-badge').textContent=anyLive?'LIVE':'LOCKED';
+  _updateCamBadge();
   showToast(`Cam ${camId} disconnected`,'info');
   fetch('/api/camera/disconnect',{
     method:'POST',
@@ -629,37 +669,59 @@ function disconnectCam(camId){
   }).catch(()=>{});
 }
 
+// Called by server socket event 'camera_access'.
+// Only updates badge / locked state for cams the user hasn't manually connected.
 function setCameraState(open){
-  // Only auto-unlock via consensus if user hasn't manually connected a cam
+  if(open) _sessionReady=true;
   for(let i=1;i<=2;i++){
-    if(_camUrls[i]) continue; // user already connected manually
+    if(_camUrls[i]) continue; // user manually connected — leave it alone
     if(!open){
       document.getElementById(`cam${i}-locked`).style.display='flex';
       document.getElementById(`cam${i}-live`).style.display='none';
       document.getElementById(`cam${i}-img`).src='';
     }
+    // When open=true but no URL configured: we just update badge below.
+    // Don't force-start a stream — user needs to paste the URL first.
   }
-  if(!open) document.getElementById('cam-badge').textContent='LOCKED';
+  _updateCamBadge();
 }
 
+// Polls /api/camera/status every 5 seconds.
+// Only used to (a) confirm session is live and update badge,
+// and (b) auto-start cams that were pre-configured in env vars.
+// NEVER overrides a manually connected cam.
 async function checkCameraStatus(){
   try{
     const d=await fetch('/api/camera/status').then(r=>r.json());
+
+    // Mark session ready if server confirms consensus
+    if(d.accessible) _sessionReady=true;
+
+    // If user already has manual connections, don't touch anything
+    const anyManual=Object.values(_camUrls).some(u=>u);
+    if(anyManual){
+      _updateCamBadge(); // always keep badge current
+      return;
+    }
+
     if(d.accessible){
-      document.getElementById('cam-badge').textContent='UNLOCKED';
+      // Auto-load server-configured cams (env var CAMERA_1_URL / CAMERA_2_URL)
       for(const[k,v] of Object.entries(d.cameras||{})){
         const id=parseInt(k);
-        if(v.configured&&!_camUrls[id]){
+        if(v.configured && v.masked_url && !_camUrls[id]){
+          // Server has a pre-configured URL — relay through server stream endpoint
+          _camUrls[id]='/api/camera/'+id+'/stream'; // sentinel so we know it's active
+          _camImgErrors[id]=0;
           const img=document.getElementById('cam'+id+'-img');
           img.onerror=null;
           img.src='/api/camera/'+id+'/stream';
           document.getElementById('cam'+id+'-locked').style.display='none';
           document.getElementById('cam'+id+'-live').style.display='block';
           document.getElementById('cam'+id+'-disconnect').style.display='inline-block';
-          document.getElementById('cam-badge').textContent='LIVE';
         }
       }
     }
+    _updateCamBadge();
   }catch(e){}
 }
 checkCameraStatus();
