@@ -10,3 +10,4 @@ eventlet
 bcrypt
 groq
 opencv-python-headless
+requests

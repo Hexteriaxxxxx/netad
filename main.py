@@ -106,11 +106,13 @@ def generate_camera_stream(cam_id):
     is_http = url.lower().startswith('http')
     if is_http:
         import requests
+        print(f"[CAM {cam_id}] Starting HTTP stream from: {url[:50]}...")
         while True:
             if not is_consensus_granted() and cam_id not in _dynamic_cams: break
             try:
                 with requests.get(url, stream=True, timeout=10,
                                   headers={'ngrok-skip-browser-warning': 'true'}) as r:
+                    print(f"[CAM {cam_id}] Connected — status {r.status_code}, content-type: {r.headers.get('Content-Type','')}")
                     buf = b''
                     for chunk in r.iter_content(chunk_size=4096):
                         if not is_consensus_granted() and cam_id not in _dynamic_cams: break
