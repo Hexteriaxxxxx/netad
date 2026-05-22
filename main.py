@@ -198,6 +198,9 @@ def node2_timestamp(payload):
     return 'PASS' if ok else 'FAIL'
 
 def node3_ip_whitelist(payload):
+    if os.environ.get('DISABLE_IP_WHITELIST', '').lower() == 'true':
+        print("Node 3 PASS: whitelist disabled via DISABLE_IP_WHITELIST")
+        return 'PASS'
     ip = payload.get('ip', '')
     ok = is_whitelisted(ip)
     print(f"Node 3 {'PASS' if ok else 'FAIL'}: {ip}")
