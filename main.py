@@ -828,7 +828,7 @@ def api_stats():
             cur = _gc(conn)
             cur.execute("SELECT COUNT(*) as c FROM blacklist")
             blocked = cur.fetchone()['c']
-            cur.execute("SELECT COUNT(*) as c FROM ai_logs WHERE flagged = true")
+            cur.execute("SELECT COUNT(*) as c FROM (SELECT flagged FROM ai_logs ORDER BY timestamp DESC LIMIT 20) sub WHERE flagged = true")
             threats = cur.fetchone()['c']
             cur.execute("SELECT COUNT(*) as c FROM device_keys WHERE status = 'pending'")
             pending = cur.fetchone()['c']
