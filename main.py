@@ -311,7 +311,50 @@ def check_dev_rate(ip, max_attempts=3, window=3600):
         _dev_reg[ip].append(now); return True
 
 # ── CLEANUP WORKER ──
+_retrain_tick = 0   # counts 120s sleep cycles — 720 × 120s = 24 hours
+
+def _retrain_from_logs():
+    """Pull real login data from DB and retrain anomaly model."""
+    try:
+        from ai.anomaly import retrain as _retrain, _PH
+        from datetime import timezone, timedelta
+        with get_db() as conn:
+            from database import get_cursor as _gc
+            cur = _gc(conn)
+            cur.execute("""
+                SELECT ip, username, timestamp FROM logs
+                WHERE timestamp > NOW() - INTERVAL '30 days'
+                  AND result IN ('GRANTED', 'DENIED', 'SUSPICIOUS')
+                ORDER BY timestamp DESC LIMIT 2000
+            """)
+            rows = cur.fetchall()
+        if len(rows) < 50:
+            print(f"[retrain] Only {len(rows)} samples — need ≥50, skipping"); return
+        samples = []
+        for r in rows:
+            dt = r['timestamp']
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            ph_dt = dt.astimezone(timezone(timedelta(hours=8)))
+            try: last_octet = int(str(r['ip']).split('.')[-1])
+            except: last_octet = 0
+            attempts_60s = 1   # we don't have per-row burst data — use conservative default
+            attempts_10m = 1
+            samples.append([
+                ph_dt.hour,
+                attempts_60s,
+                attempts_10m,
+                1 if ph_dt.weekday() >= 5 else 0,
+                len(r['username'] or ''),
+                last_octet
+            ])
+        _retrain(samples)
+        print(f"[retrain] Done — model updated with {len(samples)} real samples from last 30 days")
+    except Exception as e:
+        print(f"[retrain] Error: {e}")
+
 def token_cleanup_worker():
+    global _retrain_tick
     while True:
         try: cleanup_used_tokens()
         except Exception as e: print(f"Token cleanup: {e}")
@@ -322,6 +365,12 @@ def token_cleanup_worker():
         with _dev_reg_lock:
             stale = [ip for ip, ts in _dev_reg.items() if not ts or now - max(ts) > 3600]
             for ip in stale: del _dev_reg[ip]
+        # Retrain anomaly model every 24 hours (720 × 120s cycles)
+        _retrain_tick += 1
+        if _retrain_tick >= 720:
+            _retrain_tick = 0
+            print("[retrain] 24-hour trigger — retraining anomaly model...")
+            threading.Thread(target=_retrain_from_logs, daemon=True).start()
         time.sleep(120)
 
 def mask_ip(ip):
@@ -428,12 +477,15 @@ def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed
 
     return threats
 
-# Semaphore — max 3 concurrent Groq threat analyses
-_groq_semaphore = threading.Semaphore(3)
+# Semaphore — max 5 concurrent Groq threat analyses
+# 5 slots prevents silent drops under brute force bursts
+_groq_semaphore = threading.Semaphore(5)
 
 def _groq_analyze_async(threat):
     def _run():
-        if not _groq_semaphore.acquire(blocking=False): return
+        if not _groq_semaphore.acquire(blocking=False):
+            print(f"[Groq] semaphore full — dropped analysis for {threat.get('type','?')} from {threat.get('ip','?')}")
+            return
         try:
             key = os.environ.get('GROQ_API_KEY', '')
             if not key: return
@@ -561,27 +613,36 @@ def _run_tool(tool_name, args):
         else: return f"Unknown tool: {tool_name}"
     except Exception as e: return f"Tool error: {e}"
 
-GUARD_SYSTEM_PROMPT = """You are NETAD Guard — AI security officer of the NETAD multi-layer camera security system. Built by a 7-person team in the Philippines.
+GUARD_SYSTEM_PROMPT = """You are NETAD Guard — AI security officer for the NETAD multi-layer camera security system. Built by a 7-person team in the Philippines.
 
-ARCHITECTURE — 6 nodes ALL must PASS:
-Node 1: Password (bcrypt cost-12) | Node 2: Timestamp (30s) | Node 3: IP whitelist
-Node 4: ECDSA P-256 device sig (private key never leaves browser) | Node 5: One-time token | Node 6: Rate limit (5/hr)
-AI Layer: Isolation Forest anomaly detection (runs before nodes)
+ARCHITECTURE — 6 nodes ALL must PASS (run in parallel):
+Node 1: Password (bcrypt cost-12) | Node 2: Timestamp (30s expiry, anti-replay)
+Node 3: IP whitelist | Node 4: ECDSA P-256 device signature (private key never leaves browser)
+Node 5: One-time session token (atomic claim) | Node 6: Rate limit (5 failures/hr → 30min block)
+AI Pre-filter: Isolation Forest (PH timezone-aware) — runs BEFORE nodes, can block before consensus
 
-TEAM (ONLY authorized users): admin(Gian), kevin, josiah, jm, karl, nico, lj
-NORMAL PATTERNS: PH IPs, hours 1AM/5-7AM/3-7PM PH time, 1 device each, 1-3 logins/day
-SUSPICIOUS: 2AM-4AM logins | 3+ attempts/60s | unknown usernames | non-PH IPs | device reg after failed login
+DEVICE REGISTRATION POLICY (updated):
+- ALL device registrations go to PENDING — no auto-approve, including admin
+- Admin must approve each device via Dashboard → Devices tab
+- Only ONE approved device per user at a time — approving a new device revokes the old one
+- Registering a device that already belongs to another user is rejected
+- All 7 users have equal privileges — no special admin bypass
+
+TEAM (authorized users only): admin(Gian), kevin, josiah, jm, karl, nico, lj
+NORMAL PATTERNS: PH IPs, 5AM-10PM PH time, 1 device each, 1-3 logins/day, weekdays + weekends
+SUSPICIOUS: midnight-4AM PH | 3+ attempts/60s | unknown usernames | non-PH IPs | device reg from new IP after failed login
 
 DEMO ANSWER — "Can Sir log in with the password?":
-"No. Password passes Node 1 only. Node 3 rejects his IP (not whitelisted). Node 4 rejects his device (private key never left his browser — no approved key in DB). Two independent cryptographic layers block him. Camera stays locked."
+"No. Password passes Node 1 only. Node 3 rejects his IP (not whitelisted). Node 4 rejects his device — his browser has no approved ECDSA key in the DB, and private keys cannot be exported from WebCrypto. Two independent cryptographic layers block him. Camera stays locked."
 
-CAMERA: When admin provides an ngrok or HTTP URL for camera, call connect_camera tool immediately.
+CAMERA: When any user provides an ngrok or HTTP/RTSP URL for camera, call connect_camera tool immediately. ngrok format: https://xxxx.ngrok-free.app/video
 
 RULES:
-1. Informational queries → NEVER call tools. Just report data from system context.
-2. Tools ONLY for explicit commands: block/forgive/clear/add/remove/kick/connect [specific target]
-3. Mask IPs as x.x.x.X. Be concise, authoritative. Proactively surface threats.
-4. Max 3-4 short paragraphs unless more detail requested."""
+1. Informational queries → NEVER call tools. Report from system context only.
+2. Tools ONLY for explicit commands with a specific target: block/forgive/clear/add/remove/kick/connect
+3. Mask IPs as x.x.x.X in all responses. Never expose full IPs.
+4. All 7 team members have equal status — do not treat admin differently from others.
+5. Be concise (3-4 short paragraphs max). Surface active threats proactively."""
 
 @app.route('/api/chat', methods=['POST'])
 def api_chat():

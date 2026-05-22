@@ -569,34 +569,8 @@ function connectCam(camId) {
   const input = document.getElementById('cam' + camId + '-url-input');
   const url = input ? input.value.trim() : '';
   if (!url) { showToast('Paste a camera URL first', 'error'); return; }
-  const img = document.getElementById('cam' + camId + '-img');
-  const isHttp = url.toLowerCase().startsWith('http');
-  img.onerror = null;
-  img.onload = null;
-  // HTTP: load directly in browser (no relay, no timestamp = no reload loop)
-  // RTSP: use server relay
-  img.src = isHttp ? url : '/api/camera/' + camId + '/stream';
-  let errCount = 0;
-  img.onerror = function() {
-    errCount++;
-    if (errCount >= 3) {
-      showToast('Cam ' + camId + ': stream failed — check URL', 'error', 5000);
-      disconnectCam(camId);
-    }
-  };
-  img.onload = function() { errCount = 0; };
-  document.getElementById('cam' + camId + '-locked').style.display = 'none';
-  document.getElementById('cam' + camId + '-live').style.display = 'block';
-  document.getElementById('cam' + camId + '-disconnect').style.display = 'inline-block';
-  document.getElementById('cam-badge').textContent = 'LIVE';
-  showToast('Cam ' + camId + ' connected', 'success');
-  fetch('/api/camera/connect', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({cam_id: camId, url: url})
-  }).catch(function(){});
+  _doCamConnect(camId, url);
 }
-function connectCamDirect(camId) { connectCam(camId); }
 
 function _doCamConnect(camId,url){
   _camUrls[camId]=url;
@@ -604,10 +578,11 @@ function _doCamConnect(camId,url){
   const img=document.getElementById(`cam${camId}-img`);
   const isHttp=url.toLowerCase().startsWith('http');
 
-  // Set img src — NO cache-busting timestamp for MJPEG streams (causes reload loops)
-  // For RTSP use server relay; for HTTP use direct URL
+  // HTTP MJPEG: load directly — NO cache-busting timestamp (causes reload loops)
+  // RTSP: relay via server
   const src=isHttp?url:`/api/camera/${camId}/stream`;
-  img.onerror=null; // clear before setting src
+  img.onerror=null;
+  img.onload=null;
   img.src=src;
 
   img.onerror=()=>{
@@ -619,7 +594,7 @@ function _doCamConnect(camId,url){
     // else: browser will retry naturally — don't force reload
   };
 
-  img.onload=()=>{ _camImgErrors[camId]=0; }; // reset on success
+  img.onload=()=>{ _camImgErrors[camId]=0; };
 
   document.getElementById(`cam${camId}-locked`).style.display='none';
   document.getElementById(`cam${camId}-live`).style.display='block';
@@ -627,7 +602,6 @@ function _doCamConnect(camId,url){
   document.getElementById('cam-badge').textContent='LIVE';
   showToast(`📷 Cam ${camId} connected`,'success');
 
-  // Register on server for persistence (both HTTP and RTSP)
   fetch('/api/camera/connect',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
@@ -956,11 +930,6 @@ async function doAddUser(){
   loadUsers();
   showToast(`User '${username}' added!`,'success',5000);
 }
-
-socket.on('camera_connected',d=>{
-  showToast(`📷 Camera ${d.cam_id} connected: ${d.masked_url}`,'success',4000);
-  loadMetrics();
-});
 
 // ── GUARD AI CHAT ──
 function setChatInput(text){document.getElementById('chat-input').value=text;document.getElementById('chat-input').focus();}
