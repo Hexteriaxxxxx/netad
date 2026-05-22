@@ -727,7 +727,9 @@ def dashboard():
 @app.route('/logout')
 def logout():
     user = session.get('user')
-    if user: delete_session(user)
+    if user:
+        delete_session(user)
+        socketio.emit('user_logout', {'username': user})
     session.clear(); set_consensus_state(False)
     return redirect('/')
 
@@ -871,6 +873,7 @@ def api_blacklist_add():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     d = request.get_json()
     add_to_blacklist(d['ip'], d.get('type', 'temporary'))
+    socketio.emit('ip_blocked', {'ip': d['ip'], 'type': d.get('type','temporary'), 'by': session.get('user','admin')})
     return jsonify({'success': True})
 
 @app.route('/api/blacklist/forgive', methods=['POST'])
@@ -878,6 +881,7 @@ def api_blacklist_forgive():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     ip = request.get_json()['ip']
     forgive_ip(ip); clear_rate_limit(ip); log_admin('forgive_ip', ip)
+    socketio.emit('ip_forgiven', {'ip': ip, 'by': session.get('user','admin')})
     return jsonify({'success': True})
 
 @app.route('/api/clear-rate-limit', methods=['POST'])
@@ -899,12 +903,15 @@ def api_whitelist_add():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     d = request.get_json()
     add_to_whitelist(d['ip'], d.get('label', 'New device'))
+    socketio.emit('ip_whitelisted', {'ip': d['ip'], 'label': d.get('label','New device'), 'by': session.get('user','admin')})
     return jsonify({'success': True})
 
 @app.route('/api/whitelist/remove', methods=['POST'])
 def api_whitelist_remove():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    remove_from_whitelist(request.get_json()['ip'])
+    ip = request.get_json()['ip']
+    remove_from_whitelist(ip)
+    socketio.emit('ip_whitelist_removed', {'ip': ip, 'by': session.get('user','admin')})
     return jsonify({'success': True})
 
 @app.route('/api/sessions')
@@ -1068,13 +1075,19 @@ def api_device_approve():
 @app.route('/api/devices/reject', methods=['POST'])
 def api_device_reject():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    reject_device(request.get_json()['device_id'])
+    did = request.get_json()['device_id']
+    dev = get_device(did)
+    reject_device(did)
+    socketio.emit('device_rejected', {'device_id': did, 'username': dev['username'] if dev else ''})
     return jsonify({'success': True})
 
 @app.route('/api/devices/delete', methods=['POST'])
 def api_device_delete():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
-    delete_device(request.get_json()['device_id'])
+    did = request.get_json()['device_id']
+    dev = get_device(did)
+    delete_device(did)
+    socketio.emit('device_revoked', {'device_id': did, 'username': dev['username'] if dev else '', 'reason': 'manually revoked'})
     return jsonify({'success': True})
 
 @app.route('/api/users')
@@ -1105,6 +1118,7 @@ def api_add_user():
             if cur.rowcount == 0: return jsonify({'error': 'username already exists'}), 409
         log_admin('add_user', username)
         with _valid_users_lock: _valid_users_cache['ts'] = 0
+        socketio.emit('user_added', {'username': username, 'role': role, 'by': session.get('user','admin')})
         return jsonify({'success': True})
     except Exception as e: return jsonify({'error': str(e)}), 500
 

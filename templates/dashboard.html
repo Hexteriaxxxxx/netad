@@ -500,7 +500,7 @@ socket.on('session_kicked',d=>{
     setTimeout(()=>{window.location.href='/logout';},2000);
   }
 });
-socket.on('guard_action',d=>{showToast(`Guard: ${d.action} on ${d.ip||d.username}`,'info');loadBlacklist();loadWhitelist();});
+
 // _guardReplied: set true when sendChat() already displayed the assistant reply
 // via the REST response, so the socket broadcast doesn't create a duplicate.
 let _guardReplied = false;
@@ -527,8 +527,26 @@ socket.on('device_pending',d=>{
   document.getElementById('pending-alert-text').textContent=`New device from "${d.username}" is pending approval`;
   document.getElementById('tab-badge-devices').classList.add('show');
 });
-socket.on('device_approved',d=>{loadDevices();showToast('Device approved','success');});
-
+socket.on('device_approved',d=>{loadDevices();showToast(`✅ Device approved for ${d.username}`,'success',3500);});
+socket.on('user_logout',d=>{loadSessions();loadMetrics();showToast(`🚪 ${d.username} signed out`,'info',3000);});
+socket.on('ip_blocked',d=>{loadBlacklist();loadMetrics();showToast(`🚫 ${d.ip} blocked by ${d.by}`,'error',3500);});
+socket.on('ip_forgiven',d=>{loadBlacklist();loadMetrics();showToast(`✅ ${d.ip} unblocked by ${d.by}`,'success',3500);});
+socket.on('ip_whitelisted',d=>{loadWhitelist();showToast(`✅ ${d.ip} whitelisted — ${d.label}`,'success',3500);});
+socket.on('ip_whitelist_removed',d=>{loadWhitelist();showToast(`🗑️ ${d.ip} removed from whitelist by ${d.by}`,'warning',3500);});
+socket.on('device_rejected',d=>{loadDevices();loadMetrics();showToast(`❌ Device rejected for ${d.username}`,'error',3500);});
+socket.on('device_revoked',d=>{
+  loadDevices();loadMetrics();
+  if(d.reason==='manually revoked') showToast(`🗑️ Device revoked for ${d.username}`,'warning',3500);
+  else showToast(`🔄 ${d.username} — old device superseded by new approval`,'info',3500);
+});
+socket.on('user_added',d=>{loadUsers();showToast(`👤 User '${d.username}' added as ${d.role}`,'success',4000);});
+socket.on('guard_action',d=>{
+  const icons={block_ip:'🚫',forgive_ip:'✅',clear_rate_limit:'🔄',add_whitelist:'✅',remove_whitelist:'🗑️',kick_session:'⚡',connect_camera:'📷'};
+  const icon=icons[d.action]||'🤖';
+  const labels={block_ip:`Blocked ${d.ip}`,forgive_ip:`Unblocked ${d.ip}`,clear_rate_limit:`Rate limit cleared for ${d.ip}`,add_whitelist:`${d.ip} added to whitelist`,remove_whitelist:`${d.ip} removed from whitelist`,kick_session:`${d.username} kicked`,connect_camera:`Camera connected`};
+  showToast(`${icon} Guard: ${labels[d.action]||d.action}`,'info',4000);
+  loadBlacklist();loadWhitelist();
+});
 // ── MODAL ──
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
