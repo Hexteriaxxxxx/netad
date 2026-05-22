@@ -475,7 +475,13 @@ updateClock();setInterval(updateClock,1000);
 
 // ── SOCKET.IO ──
 const socket=io();
-socket.on('login_attempt',d=>{loadLogs();loadMetrics();showToast(`Login: ${d.username} from ${d.ip} — ${d.result}`,d.result==='GRANTED'?'success':d.result==='SUSPICIOUS'?'warning':'error');});
+socket.on('login_attempt',d=>{
+  loadLogs();loadMetrics();
+  const icons={'GRANTED':'✅','DENIED':'❌','SUSPICIOUS':'⚠️'};
+  const icon=icons[d.result]||'🔔';
+  const type=d.result==='GRANTED'?'success':d.result==='SUSPICIOUS'?'warning':'error';
+  showToast(`${icon} ${d.result}: ${d.username} — ${d.ip}`,type,4000);
+});
 socket.on('ai_alert',d=>{loadAiLogs();showToast(`🚨 AI Alert: ${d.message}`,'warning',5000);});
 socket.on('new_ai_log',d=>{
   loadAiLogs();
@@ -486,6 +492,8 @@ socket.on('new_ai_log',d=>{
 socket.on('node_status',d=>{updateNodeStatus(d.nodes);});
 socket.on('session_kicked',d=>{
   loadSessions();
+  // Skip toast for new_login reason — this is just a normal re-login replacing old session
+  if(d.reason==='new_login') return;
   showToast(`${d.username} session terminated`,'warning');
   if(d.username==='{{ user }}'){
     showToast('Your session was terminated by admin','error',3000);
