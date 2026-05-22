@@ -23,3 +23,6 @@ ai/anomaly_scaler.pkl
 # OS
 .DS_Store
 Thumbs.db
+
+# Internal QA / shared brain — not for GitHub
+BUGTRACKER.md
