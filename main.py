@@ -819,6 +819,30 @@ def api_my_ip():
         'x_real_ip': request.headers.get('X-Real-IP', 'not set')
     })
 
+@app.route('/api/stats')
+def api_stats():
+    """Public stats endpoint for login page — no auth required."""
+    try:
+        with get_db() as conn:
+            from database import get_cursor as _gc
+            cur = _gc(conn)
+            cur.execute("SELECT COUNT(*) as c FROM blacklist")
+            blocked = cur.fetchone()['c']
+            cur.execute("SELECT COUNT(*) as c FROM ai_logs WHERE flagged = true")
+            threats = cur.fetchone()['c']
+            cur.execute("SELECT COUNT(*) as c FROM device_keys WHERE status = 'pending'")
+            pending = cur.fetchone()['c']
+        db_ok = True
+    except Exception:
+        blocked, threats, pending, db_ok = 0, 0, 0, False
+    layers_active = 6 if db_ok else 0
+    return jsonify({
+        'layers': f'{layers_active}/6',
+        'threats': threats,
+        'blocked': blocked,
+        'pending': pending
+    })
+
 @app.route('/api/node-status')
 def node_status():
     try:

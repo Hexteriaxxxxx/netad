@@ -439,7 +439,22 @@ const evtPool=[
   {kind:'threat',label:'PORT SCAN',cls:'evt-threat',lat:35.7,lng:139.7},{kind:'blocked',label:'RATE LIMITED',cls:'evt-blocked',lat:28.6,lng:77.2},
   {kind:'node',label:'DEVICE VERIFIED',cls:'evt-node',lat:1.3,lng:103.8},{kind:'threat',label:'UNAPPROVED DEVICE',cls:'evt-threat',lat:-23.5,lng:-46.6},
 ];
-let activeEvts=[],threatCnt=3,blockedCnt=2;
+let activeEvts=[],threatCnt=0,blockedCnt=0;
+
+// ── REAL-TIME STATS ──
+async function loadStats(){
+  try{
+    const d=await fetch('/api/stats').then(r=>r.json());
+    threatCnt=d.threats||0;
+    blockedCnt=d.blocked||0;
+    document.getElementById('threat-count').textContent=threatCnt;
+    document.getElementById('blocked-count').textContent=blockedCnt;
+    const layerEl=document.querySelector('.g-stat.c-green');
+    if(layerEl) layerEl.lastChild.textContent=`LAYERS: ${d.layers||'6/6'} ACTIVE`;
+  }catch(e){}
+}
+loadStats();
+setInterval(loadStats,10000);
 const evtsEl=document.getElementById('globe-events');
 function spawnEvt(){
   const src=evtPool[Math.floor(Math.random()*evtPool.length)];
