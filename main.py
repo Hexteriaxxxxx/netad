@@ -328,7 +328,7 @@ def public_rate_ok(ip, max_per_min=15):
 _dev_reg: dict = {}
 _dev_reg_lock  = threading.Lock()
 
-def check_dev_rate(ip, max_attempts=3, window=3600):
+def check_dev_rate(ip, max_attempts=10, window=3600):
     now = time.time()
     with _dev_reg_lock:
         _dev_reg.setdefault(ip, [])
@@ -926,6 +926,24 @@ def api_chat_history():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_chat_logs(50)])
 
+@app.route('/api/debug/db-check')
+def api_debug_db_check():
+    """Temporary debug endpoint — remove after fixing registration issue."""
+    try:
+        with get_db() as conn:
+            from database import get_cursor as _gc
+            cur = _gc(conn)
+            cur.execute("SELECT username, role FROM users ORDER BY username")
+            users = [dict(r) for r in cur.fetchall()]
+            cur.execute("SELECT COUNT(*) as c FROM device_keys")
+            devices = cur.fetchone()['c']
+            cur.execute("SELECT COUNT(*) as c FROM whitelist")
+            wl = cur.fetchone()['c']
+        return jsonify({'users': users, 'device_count': devices, 'whitelist_count': wl, 'db': 'ok'})
+    except Exception as e:
+        return jsonify({'db': 'error', 'error': str(e)}), 500
+
+
 # ── ROUTES ──
 @app.route('/')
 def index(): return render_template('login.html')
@@ -1203,10 +1221,13 @@ def api_register_device():
 
     # Basic validation
     if not username or not device_id or not pub_key:
+        print(f"[register] FAIL: missing fields — username={bool(username)} device_id={bool(device_id)} pub_key={bool(pub_key)}")
         return jsonify({'error': 'registration failed'}), 400
     if not check_dev_rate(client_ip):
+        print(f"[register] FAIL: rate limit hit for {client_ip}")
         return jsonify({'error': 'registration failed'}), 429
     if not get_user(username):
+        print(f"[register] FAIL: user '{username}' not found in DB")
         return jsonify({'error': 'registration failed'}), 400
 
     # Security: validate that the public key is a valid JWK EC key
