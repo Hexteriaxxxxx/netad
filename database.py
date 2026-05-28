@@ -372,6 +372,12 @@ def get_chat_logs(limit=50):
 def register_device(username, device_id, public_key_jwk, label='Unknown Device', registered_ip=''):
     with get_db() as conn:
         cur = get_cursor(conn)
+        # First revoke any OTHER pending devices for this user
+        # (keep only the latest registration attempt)
+        cur.execute("""
+            UPDATE device_keys SET status = 'revoked'
+            WHERE username = %s AND status = 'pending' AND device_id != %s
+        """, (username, device_id))
         cur.execute("""
             INSERT INTO device_keys (username, device_id, public_key, label, status, registered_ip)
             VALUES (%s, %s, %s, %s, 'pending', %s)
