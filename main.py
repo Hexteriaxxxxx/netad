@@ -330,7 +330,7 @@ def public_rate_ok(ip, max_per_min=15):
 _dev_reg: dict = {}
 _dev_reg_lock  = threading.Lock()
 
-def check_dev_rate(ip, max_attempts=10, window=3600):
+def check_dev_rate(ip, max_attempts=20, window=3600):
     now = time.time()
     with _dev_reg_lock:
         _dev_reg.setdefault(ip, [])
@@ -1245,7 +1245,7 @@ def api_register_device():
         return jsonify({'error': 'registration failed'}), 400
     if not check_dev_rate(client_ip):
         print(f"[register] FAIL: rate limit hit for {client_ip}")
-        return jsonify({'error': 'registration failed'}), 429
+        return jsonify({'error': 'Too many registration attempts. Wait an hour or ask admin to redeploy.'}), 429
     if not get_user(username):
         print(f"[register] FAIL: user '{username}' not found in DB")
         return jsonify({'error': 'registration failed'}), 400

@@ -314,7 +314,7 @@ async function registerDevice(){
       const label = await getDeviceLabel();
       const res = await fetch('/api/register-device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,device_id:existingDid,public_key:JSON.stringify(pubJwk),label})});
       const data = await res.json();
-      if(data.error){setRegStatus('// '+data.error,'var(--red)');}
+      if(data.error){setRegStatus('// '+data.error,'var(--red)');return;}
       else if(data.status==='approved'){localStorage.setItem('netad_username',username);showSection('login');}
       else{localStorage.setItem('netad_username',username);showStatusMsg('pending',username);}
       return;
