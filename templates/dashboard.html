@@ -665,13 +665,35 @@ async function _doCamConnect(camId,url){
   _camImgErrors[camId]=0;
   const img=document.getElementById(`cam${camId}-img`);
 
-  showToast(`📷 Cam ${camId} connecting...`,'info',2000);
+  const isHttp = url.toLowerCase().startsWith('http');
 
-  // Step 1: Register URL with the server FIRST.
-  // For ngrok/HTTP streams, the server must proxy the request so it can inject
-  // the 'ngrok-skip-browser-warning' request header — browsers loading the ngrok
-  // URL directly in <img> don't send that header, so ngrok returns an HTML
-  // warning page instead of the MJPEG stream.
+  // HTTP/ngrok: skip server registration entirely — load directly in <img>
+  // No Railway involvement needed, no crash risk
+  if(isHttp){
+    _camUrls[camId]=url;
+    _camImgErrors[camId]=0;
+    const img=document.getElementById(`cam${camId}-img`);
+    img.onerror=null;
+    img.onload=null;
+    img.src=url;
+    img.onerror=()=>{
+      _camImgErrors[camId]++;
+      if(_camImgErrors[camId]>=MAX_IMG_ERRORS){
+        showToast(`Cam ${camId}: stream failed — check ngrok URL`,'error',6000);
+        disconnectCam(camId);
+      }
+    };
+    img.onload=()=>{ _camImgErrors[camId]=0; };
+    document.getElementById(`cam${camId}-locked`).style.display='none';
+    document.getElementById(`cam${camId}-live`).style.display='block';
+    document.getElementById(`cam${camId}-disconnect`).style.display='inline-block';
+    showToast(`📷 Cam ${camId} connected`,'success',3000);
+    _updateCamBadge();
+    return;
+  }
+
+  // RTSP: register with server for relay
+  showToast(`📷 Cam ${camId} connecting...`,'info',2000);
   try{
     const d=await fetch('/api/camera/connect',{
       method:'POST',
@@ -691,11 +713,8 @@ async function _doCamConnect(camId,url){
     return;
   }
 
-  // Step 2: Load stream directly in browser for HTTP/ngrok URLs.
-  // Railway relay is NOT used for HTTP — browser loads ngrok URL directly.
-  // For RTSP, use server relay endpoint.
-  const isHttp = url.toLowerCase().startsWith('http');
-  const src = isHttp ? url : `/api/camera/${camId}/stream`;
+  // RTSP relay src
+  const src=`/api/camera/${camId}/stream`;
 
   img.onerror=null;
   img.onload=null;
