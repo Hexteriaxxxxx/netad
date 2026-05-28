@@ -657,6 +657,13 @@ async function checkCameraStatus(){
   try{
     const d=await fetch('/api/camera/status').then(r=>r.json());
     if(d.accessible)_sessionReady=true;
+    // Auto-connect if cam already active (late joiner or page refresh)
+    for(const [id,info] of Object.entries(d.cameras||{})){
+      const camId=parseInt(id);
+      if(info.url && !_camUrls[camId]){
+        _doCamConnect(camId, info.url);
+      }
+    }
     _updateCamBadge();
   }catch(e){}
 }

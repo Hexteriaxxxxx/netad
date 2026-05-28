@@ -325,6 +325,7 @@ def camera_status():
         'configured': bool(get_camera_url(i)),
         'accessible': g and bool(get_camera_url(i)),
         'masked_url': _mask_cam_url(get_camera_url(i)),
+        'url': get_camera_url(i),
         'fetcher_alive': bool(_fetcher_threads.get(i) and _fetcher_threads[i].is_alive())
     } for i in [1, 2]}
     return jsonify({'accessible': g, 'cameras': cams})
