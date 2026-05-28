@@ -1,5 +1,5 @@
 # main.py — NETAD Security System (Railway-compatible, optimized)
-# BUILD ID: NETAD-2025-05-23-FINAL
+# BUILD ID: NETAD-2025-05-28-SHARED-BUFFER
 
 from flask import Flask, request, jsonify, render_template, session, redirect, Response
 from flask_socketio import SocketIO, emit
@@ -24,8 +24,6 @@ import os, threading, time, secrets, json, base64, re, datetime
 load_dotenv()
 
 # ── Read critical env vars once at startup and log their status ──
-# Reading inside request handlers via os.environ.get() can miss vars
-# that Railway injects before process start but after load_dotenv().
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '').strip()
 print(f"[NETAD] GROQ_API_KEY : {'SET (' + str(len(GROQ_API_KEY)) + ' chars)' if GROQ_API_KEY else '*** MISSING — Guard AI disabled ***'}")
 print(f"[NETAD] ALLOWED_ORIGIN: {os.environ.get('ALLOWED_ORIGIN', '*** MISSING ***')}")
@@ -33,7 +31,6 @@ print(f"[NETAD] DATABASE_URL  : {'SET' if os.environ.get('DATABASE_URL') else '*
 print(f"[NETAD] SECRET_KEY    : {'SET' if os.environ.get('SECRET_KEY') else '*** MISSING ***'}")
 
 app = Flask(__name__)
-# Debug — print all env vars on startup (set DEBUG_ENV=true to enable)
 if os.environ.get('DEBUG_ENV'):
     print("=== NETAD ENV DEBUG ===")
     for k in ['SECRET_KEY','DATABASE_URL','ALLOWED_ORIGIN','GROQ_API_KEY','PORT','HOST']:
@@ -80,12 +77,30 @@ def on_subscribe():
     if 'user' not in session: return False
 
 # ══════════════════════════════════════════════════
-# CAMERA
+# CAMERA — SHARED FRAME BUFFER
+#
+# Architecture:
+#   webcam_stream.py → ngrok → _fetch_frames() [ONE background thread per cam]
+#                                    ↓
+#                            _frame_buffer[cam_id]  (latest JPEG, in memory)
+#                                    ↓
+#   browser 1 ──────────────────────┤
+#   browser 2 ──── generate_camera_stream() reads buffer, not upstream
+#   browser 7 ──────────────────────┘
+#
+# This means 7 users = 7 browser connections to Railway, but only
+# ONE connection from Railway to ngrok. No more connection limit crashes.
 # ══════════════════════════════════════════════════
 CAMERA_URLS   = {1: os.environ.get('CAMERA_1_URL', ''), 2: os.environ.get('CAMERA_2_URL', '')}
 _dynamic_cams: dict = {}
 _consensus_granted  = False
 _consensus_lock     = threading.Lock()
+
+# Shared frame buffer — one fetch from ngrok, served to all browsers
+_frame_buffer: dict  = {1: None, 2: None}
+_frame_lock          = threading.Lock()
+_fetcher_threads: dict = {}   # cam_id -> Thread
+_fetcher_stop: dict    = {}   # cam_id -> threading.Event (signals fetcher to stop)
 
 def set_consensus_state(g):
     global _consensus_granted
@@ -100,68 +115,168 @@ def get_camera_url(cam_id):
 def _mask_cam_url(url):
     return re.sub(r'://([^:@/]+):([^@/]+)@', r'://***:***@', url) if url else ''
 
-def generate_camera_stream(cam_id):
+def _fetch_frames(cam_id, stop_event):
+    """Background thread — fetches frames from ngrok/RTSP into _frame_buffer.
+    Stops cleanly on: stop_event set, cam disconnected, or 5 consecutive failures."""
+    import requests as _req
     url = get_camera_url(cam_id)
-    if not url: return
+    if not url:
+        print(f"[CAM {cam_id}] Fetcher: no URL — exiting immediately")
+        return
     is_http = url.lower().startswith('http')
-    if is_http:
-        import requests
-        print(f"[CAM {cam_id}] Starting HTTP stream from: {url[:50]}...")
-        while True:
-            if not is_consensus_granted() and cam_id not in _dynamic_cams: break
-            try:
-                with requests.get(url, stream=True, timeout=10,
-                                  headers={'ngrok-skip-browser-warning': 'true'}) as r:
-                    print(f"[CAM {cam_id}] Connected — status {r.status_code}, content-type: {r.headers.get('Content-Type','')}")
-                    buf = b''
-                    for chunk in r.iter_content(chunk_size=4096):
-                        if not is_consensus_granted() and cam_id not in _dynamic_cams: break
-                        buf += chunk
-                        start = buf.find(b'\xff\xd8')
-                        end   = buf.find(b'\xff\xd9')
-                        if start != -1 and end != -1 and end > start:
-                            frame = buf[start:end+2]
-                            buf   = buf[end+2:]
-                            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            except Exception as e:
-                print(f"HTTP cam {cam_id} error: {e}")
-                if not is_consensus_granted() and cam_id not in _dynamic_cams: break
-                time.sleep(3)
-    else:
+    print(f"[CAM {cam_id}] Fetcher started ({'HTTP/ngrok' if is_http else 'RTSP'}): {url[:60]}...")
+    consecutive_errors = 0
+    MAX_ERRORS = 5  # auto-stop after 5 consecutive failures — prevents zombie threads
+
+    while not stop_event.is_set():
+        # Also stop if cam was disconnected externally (URL removed from _dynamic_cams)
+        if cam_id in _dynamic_cams and _dynamic_cams.get(cam_id) != url:
+            print(f"[CAM {cam_id}] Fetcher: URL changed — stopping old fetcher")
+            break
         try:
-            import cv2
-            cap = cv2.VideoCapture(url)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            while True:
-                if not is_consensus_granted() and cam_id not in _dynamic_cams: break
-                ret, frame = cap.read()
-                if not ret:
-                    cap.release(); time.sleep(2)
-                    cap = cv2.VideoCapture(url); continue
-                ret, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                if ret:
-                    yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buf.tobytes() + b'\r\n')
-                time.sleep(0.04)
-            cap.release()
+            if is_http:
+                with _req.get(url, stream=True, timeout=10,
+                              headers={'ngrok-skip-browser-warning': 'true'}) as r:
+                    if r.status_code != 200:
+                        print(f"[CAM {cam_id}] Fetcher: HTTP {r.status_code} — retrying in 5s")
+                        consecutive_errors += 1
+                        if consecutive_errors >= MAX_ERRORS:
+                            print(f"[CAM {cam_id}] Fetcher: {MAX_ERRORS} consecutive failures — auto-stopping")
+                            break
+                        stop_event.wait(5)
+                        continue
+                    print(f"[CAM {cam_id}] Fetcher: connected — content-type: {r.headers.get('Content-Type','?')}")
+                    consecutive_errors = 0  # reset on successful connect
+                    buf = b''
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if stop_event.is_set(): break
+                        buf += chunk
+                        while True:
+                            start = buf.find(b'\xff\xd8')
+                            end   = buf.find(b'\xff\xd9')
+                            if start != -1 and end != -1 and end > start:
+                                frame = buf[start:end+2]
+                                buf   = buf[end+2:]
+                                if len(buf) > 2 * 1024 * 1024:
+                                    buf = b''
+                                with _frame_lock:
+                                    _frame_buffer[cam_id] = frame
+                            else:
+                                break
+            else:
+                try:
+                    import cv2
+                    cap = cv2.VideoCapture(url)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    print(f"[CAM {cam_id}] Fetcher: RTSP opened")
+                    consecutive_errors = 0
+                    while not stop_event.is_set():
+                        ret, frame = cap.read()
+                        if not ret:
+                            print(f"[CAM {cam_id}] Fetcher: RTSP read failed — reconnecting")
+                            cap.release()
+                            consecutive_errors += 1
+                            if consecutive_errors >= MAX_ERRORS:
+                                print(f"[CAM {cam_id}] Fetcher: {MAX_ERRORS} consecutive failures — auto-stopping")
+                                stop_event.set()
+                                break
+                            stop_event.wait(2)
+                            cap = cv2.VideoCapture(url)
+                            continue
+                        consecutive_errors = 0
+                        ret2, buf2 = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
+                        if ret2:
+                            with _frame_lock:
+                                _frame_buffer[cam_id] = buf2.tobytes()
+                        stop_event.wait(0.125)
+                    cap.release()
+                except ImportError:
+                    print(f"[CAM {cam_id}] Fetcher: cv2 not available — RTSP not supported on Railway")
+                    break
+                except Exception as e:
+                    print(f"[CAM {cam_id}] Fetcher RTSP error: {e}")
         except Exception as e:
-            print(f"RTSP cam {cam_id} error: {e}")
+            if not stop_event.is_set():
+                consecutive_errors += 1
+                print(f"[CAM {cam_id}] Fetcher error ({consecutive_errors}/{MAX_ERRORS}): {e}")
+                if consecutive_errors >= MAX_ERRORS:
+                    print(f"[CAM {cam_id}] Fetcher: auto-stopping after {MAX_ERRORS} failures")
+                    break
+                stop_event.wait(5)
+
+    # Clear buffer when fetcher stops so browsers get a clean "no signal" state
+    with _frame_lock:
+        _frame_buffer[cam_id] = None
+    print(f"[CAM {cam_id}] Fetcher stopped cleanly")
+
+def _ensure_fetcher(cam_id):
+    """Start background frame fetcher for cam_id if not already running.
+    Called by /api/camera/connect and /api/camera/stream.
+    Safe to call multiple times — idempotent."""
+    t = _fetcher_threads.get(cam_id)
+    if t and t.is_alive():
+        return  # Already running — nothing to do
+    # Create a new stop event for this fetcher
+    stop = threading.Event()
+    _fetcher_stop[cam_id] = stop
+    t = threading.Thread(target=_fetch_frames, args=(cam_id, stop), daemon=True, name=f'cam-fetcher-{cam_id}')
+    _fetcher_threads[cam_id] = t
+    t.start()
+    print(f"[CAM {cam_id}] Started new fetcher thread")
+
+def _stop_fetcher(cam_id):
+    """Signal fetcher thread to stop. Called on disconnect."""
+    stop = _fetcher_stop.get(cam_id)
+    if stop:
+        stop.set()
+    with _frame_lock:
+        _frame_buffer[cam_id] = None
+
+def generate_camera_stream(cam_id):
+    """Generator — reads latest frame from shared buffer, yields MJPEG to browser.
+    Throttled to 8fps per client to keep Railway workers free for API calls."""
+    no_frame_count = 0
+    last_frame = None
+    while True:
+        with _frame_lock:
+            frame = _frame_buffer.get(cam_id)
+        if frame and frame is not last_frame:
+            last_frame = frame
+            no_frame_count = 0
+            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            time.sleep(0.125)  # ~8fps — reduces Railway CPU/bandwidth by ~50% vs 15fps
+        else:
+            no_frame_count += 1
+            if no_frame_count > 80:  # ~10s with no new frames
+                if get_camera_url(cam_id):
+                    print(f"[CAM {cam_id}] Stream: no new frames for 10s — restarting fetcher")
+                    _ensure_fetcher(cam_id)
+                    no_frame_count = 0
+                else:
+                    break
+            time.sleep(0.125)
 
 @app.route('/api/camera/<int:cam_id>/stream')
 def camera_stream(cam_id):
-    """RTSP-only relay. HTTP/ngrok streams load directly in browser — no relay needed."""
+    """Shared-buffer MJPEG stream.
+    Railway opens ONE upstream connection to ngrok via _fetch_frames().
+    All 7 browser clients read from the same _frame_buffer — no connection limit issues."""
     if 'user' not in session:
         return jsonify({'error': 'unauthorized'}), 401
     url = get_camera_url(cam_id)
     if not url:
         return jsonify({'error': 'not configured'}), 503
-    # HTTP/ngrok streams — tell browser to load directly, don't relay
-    if url.lower().startswith('http'):
-        return jsonify({'error': 'use direct URL', 'direct_url': url}), 400
-    # RTSP only — relay via OpenCV
     if not is_consensus_granted() and cam_id not in _dynamic_cams:
         return jsonify({'error': 'consensus not met'}), 403
-    print(f"[CAM {cam_id}] Starting RTSP relay for: {url[:40]}...")
-    return Response(generate_camera_stream(cam_id), mimetype='multipart/x-mixed-replace; boundary=frame')
+    # Ensure the single background fetcher is running.
+    # Safe to call even if already running — idempotent.
+    _ensure_fetcher(cam_id)
+    alive = bool(_fetcher_threads.get(cam_id) and _fetcher_threads[cam_id].is_alive())
+    print(f"[CAM {cam_id}] Browser client connected to shared stream (fetcher alive: {alive})")
+    return Response(
+        generate_camera_stream(cam_id),
+        mimetype='multipart/x-mixed-replace; boundary=frame'
+    )
 
 @app.route('/api/camera/connect', methods=['POST'])
 def api_camera_connect():
@@ -173,10 +288,25 @@ def api_camera_connect():
     if not re.match(r'^(rtsp|rtsps|http|https)://', url, re.IGNORECASE):
         return jsonify({'error': 'invalid URL'}), 400
     if cam_id not in [1, 2]: return jsonify({'error': 'cam_id must be 1 or 2'}), 400
+
+    # If a fetcher is already running for this cam with a different URL,
+    # stop it first so it reconnects to the new URL.
+    existing_url = get_camera_url(cam_id)
+    if existing_url and existing_url != url:
+        print(f"[CAM {cam_id}] URL changed — stopping old fetcher before starting new one")
+        _stop_fetcher(cam_id)
+        time.sleep(0.5)  # brief pause to let old fetcher exit
+
     _dynamic_cams[cam_id] = url
     masked = _mask_cam_url(url)
+
+    # Start the shared fetcher immediately on connect — don't wait for first browser client.
+    # This means the frame buffer is warm by the time the browser requests /stream.
+    _ensure_fetcher(cam_id)
+
     log_admin('camera_connect', f'cam{cam_id} → {masked}')
     socketio.emit('camera_connected', {'cam_id': cam_id, 'masked_url': masked})
+    print(f"[CAM {cam_id}] Connected: {masked} — fetcher started")
     return jsonify({'success': True, 'cam_id': cam_id, 'masked_url': masked})
 
 @app.route('/api/camera/disconnect', methods=['POST'])
@@ -184,13 +314,20 @@ def api_camera_disconnect():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     cam_id = int(request.get_json().get('cam_id', 1))
     _dynamic_cams.pop(cam_id, None)
+    _stop_fetcher(cam_id)   # Signal fetcher to stop cleanly
+    print(f"[CAM {cam_id}] Disconnected — fetcher stopped")
     socketio.emit('camera_access', {'accessible': False, 'reason': f'cam{cam_id} disconnected'})
     return jsonify({'success': True})
 
 @app.route('/api/camera/status')
 def camera_status():
     g = is_consensus_granted()
-    cams = {str(i): {'configured': bool(get_camera_url(i)), 'accessible': g and bool(get_camera_url(i)), 'masked_url': _mask_cam_url(get_camera_url(i))} for i in [1, 2]}
+    cams = {str(i): {
+        'configured': bool(get_camera_url(i)),
+        'accessible': g and bool(get_camera_url(i)),
+        'masked_url': _mask_cam_url(get_camera_url(i)),
+        'fetcher_alive': bool(_fetcher_threads.get(i) and _fetcher_threads[i].is_alive())
+    } for i in [1, 2]}
     return jsonify({'accessible': g, 'cameras': cams})
 
 # ══════════════════════════════════════════════════
@@ -338,12 +475,11 @@ def check_dev_rate(ip, max_attempts=20, window=3600):
         _dev_reg[ip].append(now); return True
 
 # ── CLEANUP WORKER ──
-_retrain_tick = 0   # counts 120s sleep cycles — 720 × 120s = 24 hours
+_retrain_tick = 0
 
 def _retrain_from_logs():
-    """Pull real login data from DB and retrain anomaly model."""
     try:
-        from ai.anomaly import retrain as _retrain, _PH
+        from ai.anomaly import retrain as _retrain
         from datetime import timezone, timedelta
         with get_db() as conn:
             from database import get_cursor as _gc
@@ -365,18 +501,9 @@ def _retrain_from_logs():
             ph_dt = dt.astimezone(timezone(timedelta(hours=8)))
             try: last_octet = int(str(r['ip']).split('.')[-1])
             except: last_octet = 0
-            attempts_60s = 1   # we don't have per-row burst data — use conservative default
-            attempts_10m = 1
-            samples.append([
-                ph_dt.hour,
-                attempts_60s,
-                attempts_10m,
-                1 if ph_dt.weekday() >= 5 else 0,
-                len(r['username'] or ''),
-                last_octet
-            ])
+            samples.append([ph_dt.hour, 1, 1, 1 if ph_dt.weekday() >= 5 else 0, len(r['username'] or ''), last_octet])
         _retrain(samples)
-        print(f"[retrain] Done — model updated with {len(samples)} real samples from last 30 days")
+        print(f"[retrain] Done — {len(samples)} real samples")
     except Exception as e:
         print(f"[retrain] Error: {e}")
 
@@ -385,7 +512,6 @@ def token_cleanup_worker():
     while True:
         try: cleanup_used_tokens()
         except Exception as e: print(f"Token cleanup: {e}")
-        # Expire pending votes
         now = time.time()
         with _votes_lock:
             expired = [vid for vid, v in _pending_votes.items()
@@ -398,14 +524,12 @@ def token_cleanup_worker():
                     'description': _vote_description(v['action'], v['args']),
                     'requester': v['requester']
                 })
-        now = time.time()
         with _public_rate_lock:
             stale = [ip for ip, ts in _public_rate.items() if not ts or now - max(ts) > 120]
             for ip in stale: del _public_rate[ip]
         with _dev_reg_lock:
             stale = [ip for ip, ts in _dev_reg.items() if not ts or now - max(ts) > 3600]
             for ip in stale: del _dev_reg[ip]
-        # Retrain anomaly model every 24 hours (720 × 120s cycles)
         _retrain_tick += 1
         if _retrain_tick >= 720:
             _retrain_tick = 0
@@ -472,7 +596,6 @@ def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed
     ua      = (user_agent or '').lower()
     granted = result == 'GRANTED'
 
-    # SQL injection + attack tools — always check even on successful logins
     for field, val in [('username', data.get('_raw_username', username)), ('password', data.get('_raw_password', ''))]:
         v = val.lower()
         for p in _SQL_PATTERNS:
@@ -485,20 +608,17 @@ def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed
             threats.append({'type': 'ATTACK_TOOL', 'description': f'Attack tool UA: {user_agent[:80]}', 'severity': 'HIGH', 'score': -0.8})
             break
 
-    # === DENIED-only checks — skip entirely on successful logins ===
     if not granted:
-
         if username and username not in _get_valid_users():
             threats.append({'type': 'UNKNOWN_USERNAME', 'description': f'Unknown username: "{username}"', 'severity': 'MEDIUM', 'score': -0.5})
 
         if votes and votes[0] == 'FAIL':
             try:
                 count = get_all_failed_count(ip)
-                if count >= 3:  # lower threshold for detection vs blocking
+                if count >= 3:
                     threats.append({'type': 'BRUTE_FORCE', 'description': f'Rate limit hit — {count} failed attempts from {mask_ip(ip)}', 'severity': 'HIGH', 'score': -0.85})
             except Exception: pass
         elif votes and votes[0] == 'PASS':
-            # Even if rate limit passed, still log brute force if count is high
             try:
                 count = get_all_failed_count(ip)
                 if count >= 3:
@@ -511,21 +631,16 @@ def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed
         if len(votes) >= 6 and votes[5] == 'FAIL':
             threats.append({'type': 'REPLAY_ATTACK', 'description': f'Token already consumed — replay attack from {mask_ip(ip)}', 'severity': 'HIGH', 'score': -0.8})
 
-        # OFF_HOURS — log only (MEDIUM), never blocks on its own
-        # Isolation Forest needs sufficient real data before estimates are reliable
         ph_hour = (datetime.datetime.now(datetime.timezone.utc).hour + 8) % 24
         if ph_hour >= 22 or ph_hour < 5:
             threats.append({'type': 'OFF_HOURS', 'description': f'Failed login at {ph_hour:02d}:00 PH — outside normal hours (5AM-10PM)', 'severity': 'MEDIUM', 'score': -0.3})
 
-    # CREDENTIAL_LEAK — only for known valid users, only on denied logins
     if len(votes) >= 2 and votes[1] == 'PASS' and not granted:
         if username in _get_valid_users():
             threats.append({'type': 'CREDENTIAL_LEAK', 'description': f'Correct password but denied — password may be compromised for "{username}"', 'severity': 'CRITICAL', 'score': -0.95})
 
     return threats
 
-# Semaphore — max 5 concurrent Groq threat analyses
-# 5 slots prevents silent drops under brute force bursts
 _groq_semaphore = threading.Semaphore(5)
 
 def _groq_analyze_async(threat):
@@ -580,7 +695,7 @@ def log_all_threats(username, ip, data, result, votes, user_agent='', csrf_faile
 # ══════════════════════════════════════════════════
 _ctx_cache: dict = {'data': None, 'ts': 0}
 _ctx_lock = threading.Lock()
-CTX_TTL = 30  # seconds — increased from 10 to reduce DB queries on rapid chat
+CTX_TTL = 30
 
 def _get_system_context():
     now = time.time()
@@ -638,12 +753,10 @@ GUARD_TOOLS = [
 
 # ══════════════════════════════════════════════════
 # MAJORITY VOTE SYSTEM
-# Sensitive Guard AI actions require 2/7 approvals
-# Requester counts as 1 — needs 1 more from any teammate
 # ══════════════════════════════════════════════════
 _pending_votes: dict = {}
 _votes_lock = threading.Lock()
-VOTE_TIMEOUT  = 300   # 5 minutes
+VOTE_TIMEOUT  = 300
 VOTES_REQUIRED = 2
 VOTEABLE_ACTIONS = {'block_ip','forgive_ip','clear_rate_limit','add_whitelist','remove_whitelist','kick_session'}
 
@@ -662,7 +775,7 @@ def _create_vote(action, args, requester):
     vote = {
         'id': vote_id, 'action': action, 'args': args,
         'requester': requester,
-        'approvals': {requester},  # requester auto-approves
+        'approvals': {requester},
         'rejections': set(),
         'created_at': now, 'expires_at': now + VOTE_TIMEOUT,
         'executed': False, 'cancelled': False
@@ -680,7 +793,6 @@ def _create_vote(action, args, requester):
     return vote_id, desc
 
 def _execute_action(action, args, sender='system'):
-    """Directly executes an action — called after vote passes or for non-voteable actions."""
     try:
         if action == 'block_ip':
             ip = args['ip']; add_to_blacklist(ip, 'temporary', 1800)
@@ -715,7 +827,13 @@ def _execute_action(action, args, sender='system'):
         elif action == 'connect_camera':
             cam_id = int(args['cam_id']); url = args['url']
             if not re.match(r'^(rtsp|rtsps|http|https)://', url, re.IGNORECASE): return "Invalid URL."
-            _dynamic_cams[cam_id] = url; masked = _mask_cam_url(url)
+            existing = get_camera_url(cam_id)
+            if existing and existing != url:
+                _stop_fetcher(cam_id)
+                time.sleep(0.5)
+            _dynamic_cams[cam_id] = url
+            _ensure_fetcher(cam_id)
+            masked = _mask_cam_url(url)
             log_admin('guard:camera_connect', f'cam{cam_id} → {masked} (by {sender})')
             socketio.emit('camera_connected', {'cam_id': cam_id, 'masked_url': masked})
             return f"Camera {cam_id} connected: {masked}"
@@ -723,7 +841,6 @@ def _execute_action(action, args, sender='system'):
     except Exception as e: return f"Action error: {e}"
 
 def _run_tool(tool_name, args, sender='unknown'):
-    """Called by Guard AI. Creates vote for sensitive actions, executes non-sensitive directly."""
     if tool_name in VOTEABLE_ACTIONS:
         vote_id, desc = _create_vote(tool_name, args, sender)
         return (f"⏳ VOTE CREATED — {desc}\n"
@@ -770,23 +887,14 @@ RULE 1 — TOOL USE IS DESTRUCTIVE. ONLY call a tool when:
     - "Who's online?" → list from context
     - "What happened earlier?" → describe from logs
     - "Is the rate limit cleared?" → check context, report status
-    - "Did something reset?" → informational answer only
     - Any question ending in "?" → almost always informational
     - Anything with "did", "has", "is", "was", "can", "what", "who", "when", "why", "how" → informational
 
 RULE 2 — NEVER assume a question is a command.
-  "Did the attempts today reset earlier?" = question about the counter, NOT a rate limit command.
-  "Is x.x.x.63 blocked?" = status check, NOT a block command.
-  "What's the current blacklist?" = read request, NOT a modification.
-
-RULE 3 — When unsure if action is intended, ASK FIRST:
-  "Did you want me to clear the rate limit for that IP, or were you just asking about its status?"
-
+RULE 3 — When unsure if action is intended, ASK FIRST.
 RULE 4 — Mask all IPs as x.x.x.X in responses.
-
 RULE 5 — Be concise (3-4 short paragraphs max). Report threats proactively.
-
-RULE 6 — "Attempts today" refers to the login attempt counter (resets midnight PH time). This is NOT the same as rate limit. Rate limit is per-IP per-hour. Do NOT confuse them.
+RULE 6 — "Attempts today" ≠ rate limit. Rate limit is per-IP per-hour.
 
 CAMERA: When user explicitly asks to connect a camera with a URL, call connect_camera immediately.
 
@@ -810,7 +918,6 @@ def api_chat():
     socketio.emit('chat_message', {'role': 'user', 'message': msg, 'sender': sender})
 
     history  = get_chat_logs(16)
-    # Include sender identity so Guard AI knows who is issuing commands
     sender_context = f"\n=== CURRENT USER ===\nSender: {sender} | Role: {'admin' if sender == 'admin' else 'member'}\nOnly admin (Gian) can use kick_session tool.\n"
     messages = [{'role': 'system', 'content': GUARD_SYSTEM_PROMPT + sender_context + "\n" + _get_system_context()}]
     for m in history:
@@ -877,7 +984,6 @@ def api_vote_approve():
             'tool_result': result
         })
         log_admin(f'vote:approved', f"{vote_snap['action']} — approved by {voter}, requested by {vote_snap['requester']}")
-        loadMetrics_hint = vote_snap['action'] in ('block_ip','forgive_ip','add_whitelist','remove_whitelist')
         return jsonify({'success': True, 'executed': True, 'result': result})
     else:
         socketio.emit('vote_update', {
@@ -911,7 +1017,6 @@ def api_vote_reject():
 
 @app.route('/api/vote/pending')
 def api_vote_pending():
-    """Returns all active pending votes — for restoring state on page load."""
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     now = time.time()
     result = []
@@ -931,8 +1036,6 @@ def api_vote_pending():
 
 @app.route('/api/action/request', methods=['POST'])
 def api_action_request():
-    """Creates a team vote for a sensitive action requested outside Guard AI chat.
-    Used by whitelist/blacklist/sessions tabs when user clicks Remove/Forgive/Kick."""
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     d = request.get_json()
     action = d.get('action', '')
@@ -940,7 +1043,6 @@ def api_action_request():
     sender = session.get('user', 'unknown')
     if action not in VOTEABLE_ACTIONS:
         return jsonify({'error': f'action {action} not voteable'}), 400
-    # Basic arg validation
     if action in ('block_ip','forgive_ip','clear_rate_limit','add_whitelist','remove_whitelist'):
         if not args.get('ip'): return jsonify({'error': 'missing ip'}), 400
     if action == 'kick_session':
@@ -948,7 +1050,6 @@ def api_action_request():
     vote_id, desc = _create_vote(action, args, sender)
     log_admin(f'vote:requested', f'{desc} (by {sender} via dashboard)')
     return jsonify({'success': True, 'vote_id': vote_id, 'description': desc})
-
 
 @app.route('/api/chat/history')
 def api_chat_history():
@@ -1026,8 +1127,6 @@ def login():
     }
     result, votes, steps = run_consensus(payload)
     granted = result == 'GRANTED'
-    # Hard block — if IP got blacklisted during this attempt (e.g. hit exactly 5)
-    # or was already blacklisted before consensus ran, deny regardless of other nodes
     if granted and is_blacklisted(client_ip):
         granted = False
         result = 'DENIED'
@@ -1044,8 +1143,6 @@ def login():
         session['user'] = username
         session['token'] = sess_token
         set_consensus_state(True)
-        # Auto-whitelist the IP on every successful login.
-        # All 6 nodes passed (including ECDSA device sig) — the user is fully verified.
         wl_label = f'{username} (auto: login {datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")})'
         add_to_whitelist(client_ip, wl_label)
         socketio.emit('ip_whitelisted', {'ip': client_ip, 'label': wl_label, 'by': 'system'})
@@ -1056,8 +1153,6 @@ def login():
 
 @app.route('/api/my-ip')
 def api_my_ip():
-    """Debug endpoint — returns the IP Railway detects for your device.
-    Compare this with your whitelisted IP to diagnose Node 3 issues."""
     raw = request.remote_addr
     normalized = normalize_ip(raw or '')
     whitelisted = is_whitelisted(normalized)
@@ -1071,7 +1166,6 @@ def api_my_ip():
 
 @app.route('/api/stats')
 def api_stats():
-    """Public stats endpoint for login page — no auth required."""
     try:
         with get_db() as conn:
             from database import get_cursor as _gc
@@ -1086,12 +1180,7 @@ def api_stats():
     except Exception:
         blocked, threats, pending, db_ok = 0, 0, 0, False
     layers_active = 6 if db_ok else 0
-    return jsonify({
-        'layers': f'{layers_active}/6',
-        'threats': threats,
-        'blocked': blocked,
-        'pending': pending
-    })
+    return jsonify({'layers': f'{layers_active}/6', 'threats': threats, 'blocked': blocked, 'pending': pending})
 
 @app.route('/api/node-status')
 def node_status():
@@ -1108,7 +1197,6 @@ def api_logs():
 
 @app.route('/api/metrics')
 def api_metrics():
-    """Dedicated metrics endpoint — returns real counts, not limited by display caps."""
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     try:
         attempts   = get_logs_today_count()
@@ -1237,27 +1325,18 @@ def api_register_device():
     pub_key   = d.get('public_key', '').strip()
     label     = str(d.get('label', 'Unknown Device'))[:50].strip()
     client_ip = request.remote_addr
-
-    # Basic validation
     if not username or not device_id or not pub_key:
-        print(f"[register] FAIL: missing fields — username={bool(username)} device_id={bool(device_id)} pub_key={bool(pub_key)}")
         return jsonify({'error': 'registration failed'}), 400
     if not check_dev_rate(client_ip):
-        print(f"[register] FAIL: rate limit hit for {client_ip}")
         return jsonify({'error': 'Too many registration attempts. Wait an hour or ask admin to redeploy.'}), 429
     if not get_user(username):
-        print(f"[register] FAIL: user '{username}' not found in DB")
         return jsonify({'error': 'registration failed'}), 400
-
-    # Security: validate that the public key is a valid JWK EC key
-    # Reject malformed keys before storing
     try:
         jwk = json.loads(pub_key)
         if not all(k in jwk for k in ('kty', 'crv', 'x', 'y')):
             raise ValueError('Missing required JWK fields')
         if jwk.get('kty') != 'EC' or jwk.get('crv') != 'P-256':
             raise ValueError('Only EC P-256 keys are accepted')
-        # Validate x and y are valid base64url
         import base64 as _b64
         for coord in ('x', 'y'):
             val = jwk[coord]
@@ -1269,24 +1348,13 @@ def api_register_device():
     except Exception as e:
         add_log(username, client_ip, 'DENIED', f'Device reg rejected — invalid JWK: {e}')
         return jsonify({'error': 'registration failed'}), 400
-
-    # Security: one device per browser fingerprint per user
-    # Check if this device_id already exists for a DIFFERENT user
     existing = get_device(device_id)
     if existing and existing.get('username') != username:
         add_log(username, client_ip, 'DENIED', f'Device {device_id[:12]} already registered to another user')
         return jsonify({'error': 'registration failed'}), 400
-
-    # ALL registrations go to pending — NO auto-approve, even for admin
-    # Admin approves via dashboard (including their own device)
     register_device(username, device_id, pub_key, label, registered_ip=client_ip)
     pending = len(get_pending_devices())
-    socketio.emit('device_pending', {
-        'username': username,
-        'device_id': device_id,
-        'label': label,
-        'pending_count': pending
-    })
+    socketio.emit('device_pending', {'username': username, 'device_id': device_id, 'label': label, 'pending_count': pending})
     add_log(username, client_ip, 'PENDING', f'Device registration pending: {label[:30]}')
     return jsonify({'status': 'pending'})
 
@@ -1331,7 +1399,6 @@ def api_devices():
 def api_device_approve():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     did = request.get_json()['device_id']
-    # approve_device now returns list of revoked device_ids
     revoked = approve_device(did)
     dev = get_device(did)
     if dev:
@@ -1342,14 +1409,9 @@ def api_device_approve():
             print(f"[approve] Auto-whitelisted {reg_ip} for {dev['username']}")
         else:
             print(f"[approve] WARNING: no registered_ip for device {did[:12]} — whitelist not updated")
-    # Notify dashboard — new device approved
     socketio.emit('device_approved', {'device_id': did, 'username': dev['username'] if dev else ''})
-    # Notify any revoked devices — their Node 4 will now FAIL
     for revoked_id in revoked:
-        socketio.emit('device_revoked', {
-            'device_id': revoked_id,
-            'reason': f'Superseded by new device approval for {dev["username"] if dev else ""}'
-        })
+        socketio.emit('device_revoked', {'device_id': revoked_id, 'reason': f'Superseded by new device approval for {dev["username"] if dev else ""}'})
         _notify_guard(f"🔄 Device {revoked_id[:12]}... revoked — {dev['username'] if dev else ''} approved a new device")
     log_admin('approve_device', f"{did} (revoked {len(revoked)} old device(s))")
     return jsonify({'success': True, 'revoked': revoked})
