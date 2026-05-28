@@ -691,11 +691,11 @@ async function _doCamConnect(camId,url){
     return;
   }
 
-  // Step 2: Always stream through the Railway server proxy endpoint.
-  // Server-side relay adds 'ngrok-skip-browser-warning' to the upstream request,
-  // which is required for ngrok URLs. RTSP is also handled server-side (cv2/ffmpeg).
-  // Direct <img src="ngrok-url"> is intentionally NOT used — see note above.
-  const src=`/api/camera/${camId}/stream`;
+  // Step 2: Load stream directly in browser for HTTP/ngrok URLs.
+  // Railway relay is NOT used for HTTP — browser loads ngrok URL directly.
+  // For RTSP, use server relay endpoint.
+  const isHttp = url.toLowerCase().startsWith('http');
+  const src = isHttp ? url : `/api/camera/${camId}/stream`;
 
   img.onerror=null;
   img.onload=null;
