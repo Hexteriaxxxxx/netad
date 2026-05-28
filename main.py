@@ -1383,7 +1383,8 @@ def api_device_status():
     did = request.args.get('device_id', '')
     if not did: return jsonify({'status': 'unknown'})
     dev = get_device(did)
-    return jsonify({'status': dev['status'] if dev else 'not_registered'})
+    if not dev: return jsonify({'status': 'not_registered'})
+    return jsonify({'status': dev['status'], 'username': dev['username'], 'label': dev.get('label','')})
 
 @app.route('/api/devices')
 def api_devices():

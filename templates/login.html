@@ -213,7 +213,7 @@ async function initDevice(){
     if(!_deviceKeyPair||!_deviceId){showSection('register');return;}
     const res=await fetch('/api/device-status?device_id='+_deviceId);
     const data=await res.json();
-    _deviceUsername=data.username||null;
+    _deviceUsername=data.username||localStorage.getItem('netad_username')||null;
     if(data.status==='approved'){showSection('login');}
     else if(data.status==='pending'){showStatusMsg('pending',data.username);document.getElementById('update-ip-btn').style.display='flex';}
     else if(data.status==='rejected'){showStatusMsg('rejected',data.username);}
