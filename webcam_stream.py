@@ -103,7 +103,10 @@ def capture_loop_opencv(source):
         time.sleep(1/CAM_FPS)
     cap.release()
 
+import base64
+
 def generate_frames():
+    """MJPEG generator — kept for backward compat but NOT used by dashboard anymore."""
     while True:
         with _frame_lock:
             frame = _latest_frame
@@ -120,19 +123,36 @@ def index():
     return f'''
     <html><body style="background:#000;color:#0f0;font-family:monospace;padding:20px">
     <h2>NETAD Camera Stream</h2>
-    <img src="/video" style="width:640px;border:2px solid #0f0"><br><br>
     <p>Status: <b>{status}</b></p>
-    <p>Stream URL: <b>/video</b></p>
+    <p>Frame endpoint: <b>/frame</b> (JSON, used by dashboard)</p>
+    <p>MJPEG endpoint: <b>/video</b> (legacy)</p>
     </body></html>
     '''
 
+@app.route('/frame')
+def frame_json():
+    """Returns the latest frame as base64 JSON.
+    Dashboard polls this every ~150ms via short fetch — no persistent connection.
+    This is the fix for the 'MJPEG blocks AI chat' bug:
+      Old: img.src = persistent MJPEG stream = 1 permanent HTTP connection per browser
+      New: JS fetch('/frame') every 150ms = short-lived requests, never blocks other APIs
+    """
+    with _frame_lock:
+        frame = _latest_frame
+    if not frame:
+        return {'ok': False, 'frame': None}, 503
+    b64 = base64.b64encode(frame).decode('utf-8')
+    return {'ok': True, 'frame': b64, 'ts': time.time()}
+
 @app.route('/stream')
 def stream_redirect():
-    """Alias — so both /stream and /video work in NETAD dashboard."""
+    """Alias — so both /stream and /video work."""
     return video_feed()
 
 @app.route('/video')
 def video_feed():
+    """Legacy MJPEG endpoint — still works for direct browser testing.
+    DO NOT use in dashboard — blocks AI chat due to persistent connection."""
     return Response(
         generate_frames(),
         mimetype='multipart/x-mixed-replace; boundary=frame',
