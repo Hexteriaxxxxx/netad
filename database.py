@@ -372,11 +372,11 @@ def get_chat_logs(limit=50):
 def register_device(username, device_id, public_key_jwk, label='Unknown Device', registered_ip=''):
     with get_db() as conn:
         cur = get_cursor(conn)
-        # First revoke any OTHER pending devices for this user
-        # (keep only the latest registration attempt)
+        # Revoke ALL existing devices for this user except the new one
+        # One device per user — latest registration always wins
         cur.execute("""
             UPDATE device_keys SET status = 'revoked'
-            WHERE username = %s AND status = 'pending' AND device_id != %s
+            WHERE username = %s AND device_id != %s
         """, (username, device_id))
         cur.execute("""
             INSERT INTO device_keys (username, device_id, public_key, label, status, registered_ip)
@@ -385,6 +385,7 @@ def register_device(username, device_id, public_key_jwk, label='Unknown Device',
             SET public_key = EXCLUDED.public_key,
                 username = EXCLUDED.username,
                 registered_ip = EXCLUDED.registered_ip,
+                label = EXCLUDED.label,
                 status = 'pending',
                 approved_at = NULL
         """, (username, device_id, public_key_jwk, label, registered_ip))
@@ -435,13 +436,16 @@ def approve_device(device_id):
         row = cur.fetchone()
         if not row: return []
         username = row['username']
+        # Since register_device already revokes all other devices,
+        # there should only ever be one device per user here.
+        # Still revoke any stragglers just in case.
         cur.execute(
-            "SELECT device_id FROM device_keys WHERE username = %s AND status = 'approved' AND device_id != %s",
+            "SELECT device_id FROM device_keys WHERE username = %s AND status != 'revoked' AND device_id != %s",
             (username, device_id)
         )
         revoked = [r['device_id'] for r in cur.fetchall()]
         cur.execute(
-            "UPDATE device_keys SET status = 'revoked' WHERE username = %s AND status = 'approved' AND device_id != %s",
+            "UPDATE device_keys SET status = 'revoked' WHERE username = %s AND device_id != %s",
             (username, device_id)
         )
         cur.execute(
