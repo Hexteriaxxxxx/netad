@@ -748,7 +748,7 @@ GUARD_TOOLS = [
     {'type': 'function', 'function': {'name': 'clear_rate_limit', 'description': 'Clear rate limit for a specific IP. REQUIRES: explicit IP in x.x.x.x format AND explicit clear/reset command. Asking IF it was cleared is NOT a command.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
     {'type': 'function', 'function': {'name': 'add_whitelist', 'description': 'Add a specific IP to whitelist. REQUIRES: explicit IP and explicit add/whitelist command.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}, 'label': {'type': 'string'}}, 'required': ['ip']}}},
     {'type': 'function', 'function': {'name': 'remove_whitelist', 'description': 'Remove a specific IP from whitelist. REQUIRES: explicit IP and explicit remove command.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
-    {'type': 'function', 'function': {'name': 'kick_session', 'description': 'Force logout a specific user. ONLY callable by admin (Gian). REQUIRES: explicit username and explicit kick command. NEVER call if sender is not admin.', 'parameters': {'type': 'object', 'properties': {'username': {'type': 'string'}}, 'required': ['username']}}},
+    {'type': 'function', 'function': {'name': 'kick_session', 'description': 'Force logout a specific user. ONLY callable by admin (Gian). REQUIRES ALL OF THESE: (1) sender is admin, (2) explicit username stated, (3) explicit kick/logout/remove/terminate verb used. Mentioning a username in ANY other context (asking about them, reporting activity, saying they logged in) is NOT a kick command. NEVER call if any condition is missing.', 'parameters': {'type': 'object', 'properties': {'username': {'type': 'string'}}, 'required': ['username']}}},
     {'type': 'function', 'function': {'name': 'connect_camera', 'description': 'Connect a camera stream URL. REQUIRES: full URL starting with https:// or rtsp://', 'parameters': {'type': 'object', 'properties': {'cam_id': {'type': 'integer'}, 'url': {'type': 'string'}}, 'required': ['cam_id', 'url']}}},
 ]
 
@@ -877,12 +877,16 @@ CRITICAL RULES — READ CAREFULLY
 RULE 1 — TOOL USE IS DESTRUCTIVE. ONLY call a tool when:
   • The user uses an EXPLICIT ACTION VERB targeting a SPECIFIC object
   • Examples that SHOULD trigger tools:
-    - "Block 192.168.1.9" → block_ip
-    - "Approve kevin's device" → NOT a tool (use dashboard)
-    - "Forgive 103.196.139.63" → forgive_ip
     - "Kick jm" → kick_session
-    - "Clear rate limit for 103.196.139.63" → clear_rate_limit
-    - "Connect camera https://xxx.ngrok-free.app/video" → connect_camera
+    - "Remove jm from the system" → kick_session
+    - "Log out jm" → kick_session
+    - "Terminate jm's session" → kick_session
+  • Examples that should NEVER trigger kick_session:
+    - "jm" alone → just a name, NOT a command
+    - "jm logged in" → informational
+    - "what is jm doing" → informational
+    - "jm has been suspicious" → informational
+    - Any message where username appears WITHOUT a kick/logout/remove/terminate verb
   • Examples that should NEVER trigger tools (just answer):
     - "Did the attempts reset?" → explain the reset schedule
     - "Who's online?" → list from context
