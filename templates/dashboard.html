@@ -638,44 +638,34 @@ async function _doCamConnect(camId,url){
   _camImgErrors[camId]=0;
   const img=document.getElementById(`cam${camId}-img`);
 
-  // ALL streams (HTTP/ngrok and RTSP) go through Railway server relay.
-  // Railway fetches ONE connection to ngrok via _fetch_frames(), shares frame buffer with all browsers.
-  // 7 users = 7 browsers reading from Railway buffer — NOT 7 direct ngrok connections.
-  showToast(`📷 Cam ${camId} connecting...`,'info',2000);
-  try{
-    const d=await fetch('/api/camera/connect',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({cam_id:camId,url})
-    }).then(r=>r.json());
-    if(!d.success){
-      showToast(`Cam ${camId}: ${d.error||'connection failed'}`,'error',5000);
-      _camUrls[camId]='';
-      return;
-    }
-    showToast(`📷 Cam ${camId} connected`,'success',3000);
-  }catch(e){
-    console.warn(`Cam ${camId} server error:`,e);
-    showToast(`Cam ${camId}: could not reach server`,'error',5000);
-    _camUrls[camId]='';
-    return;
-  }
+  // Cloudflare Tunnel — load URL DIRECTLY in <img>, Railway completely out of the video path.
+  // Cloudflare quick tunnel has no browser interstitial so direct img.src works fine.
+  // Architecture: webcam_stream.py → cloudflared → <img src="tunnel-url/video"> (browser direct)
 
-  // All browsers read from shared Railway buffer — never touches ngrok directly
-  const src=`/api/camera/${camId}/stream`;
+  // Register with server for logging only — fire-and-forget, non-blocking
+  fetch('/api/camera/connect',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cam_id:camId,url})
+  }).then(r=>r.json()).then(d=>{
+    if(d.success) console.log(`[CAM ${camId}] Registered: ${d.masked_url}`);
+  }).catch(e=>console.warn(`[CAM ${camId}] Server log failed (non-fatal):`,e));
 
+  // Direct browser → Cloudflare tunnel (no Railway relay)
   img.onerror=null;
   img.onload=null;
-  img.src=src;
+  img.src=url;
 
   img.onerror=()=>{
     _camImgErrors[camId]++;
     if(_camImgErrors[camId]>=MAX_IMG_ERRORS){
-      showToast(`Cam ${camId}: stream failed — check ngrok URL or webcam_stream.py`,'error',6000);
+      showToast(`Cam ${camId}: failed — check cloudflared is running + webcam_stream.py is running`,'error',7000);
       disconnectCam(camId);
     }
   };
   img.onload=()=>{ _camImgErrors[camId]=0; };
+
+  showToast(`📷 Cam ${camId} connecting via Cloudflare...`,'info',2000);
 
   document.getElementById(`cam${camId}-locked`).style.display='none';
   document.getElementById(`cam${camId}-live`).style.display='block';
