@@ -234,7 +234,7 @@ def _stop_fetcher(cam_id):
 
 def generate_camera_stream(cam_id):
     """Generator — reads latest frame from shared buffer, yields MJPEG to browser.
-    Throttled to 8fps per client to keep Railway workers free for API calls."""
+    Throttled to 4fps per client to keep Railway workers free for API calls."""
     no_frame_count = 0
     last_frame = None
     while True:
@@ -244,17 +244,16 @@ def generate_camera_stream(cam_id):
             last_frame = frame
             no_frame_count = 0
             yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            time.sleep(0.125)  # ~8fps — reduces Railway CPU/bandwidth by ~50% vs 15fps
+            time.sleep(0.25)  # 4fps — low enough to keep API responsive
         else:
             no_frame_count += 1
-            if no_frame_count > 80:  # ~10s with no new frames
+            if no_frame_count > 40:  # ~10s with no new frames
                 if get_camera_url(cam_id):
-                    print(f"[CAM {cam_id}] Stream: no new frames for 10s — restarting fetcher")
                     _ensure_fetcher(cam_id)
                     no_frame_count = 0
                 else:
                     break
-            time.sleep(0.125)
+            time.sleep(0.25)
 
 @app.route('/api/camera/<int:cam_id>/stream')
 def camera_stream(cam_id):
