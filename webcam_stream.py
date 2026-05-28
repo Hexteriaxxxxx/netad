@@ -15,7 +15,10 @@ from flask import Flask, Response, request
 app = Flask(__name__)
 
 PORT          = int(os.environ.get('WEBCAM_PORT', 8080))
-JPEG_QUALITY  = int(os.environ.get('WEBCAM_QUALITY', 70))
+JPEG_QUALITY  = int(os.environ.get('WEBCAM_QUALITY', 40))   # lowered: 70→40, reduces frame size ~50%
+CAM_WIDTH     = int(os.environ.get('WEBCAM_WIDTH', 320))    # lowered: 640→320 for Railway bandwidth
+CAM_HEIGHT    = int(os.environ.get('WEBCAM_HEIGHT', 240))   # lowered: 480→240
+CAM_FPS       = int(os.environ.get('WEBCAM_FPS', 8))        # lowered: 15→8 matches server serve rate
 CAMERA_SOURCE = os.environ.get('CAMERA_SOURCE', '0')
 ALLOWED_ORIGIN = os.environ.get('ALLOWED_ORIGIN', '*')
 
@@ -41,7 +44,7 @@ def capture_loop_ffmpeg(source):
     global _latest_frame, _running
     cmd = [
         'ffmpeg', '-rtsp_transport', 'tcp', '-i', source,
-        '-vf', 'scale=640:480', '-r', '15',
+        '-vf', f'scale={CAM_WIDTH}:{CAM_HEIGHT}', '-r', str(CAM_FPS),
         '-f', 'image2pipe', '-vcodec', 'mjpeg', '-q:v', '5', 'pipe:1'
     ]
     print("[NETAD] Starting ffmpeg RTSP relay...")
@@ -78,14 +81,14 @@ def capture_loop_opencv(source):
     except ValueError:
         src = source
     cap = cv2.VideoCapture(src, cv2.CAP_DSHOW)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS, 15)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_HEIGHT)
+    cap.set(cv2.CAP_PROP_FPS, CAM_FPS)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     if not cap.isOpened():
         print(f"[NETAD] ERROR: Could not open webcam {src}")
         return
-    print(f"[NETAD] Webcam {src} opened via DirectShow ✓")
+    print(f"[NETAD] Webcam {src} @ {CAM_WIDTH}x{CAM_HEIGHT} {CAM_FPS}fps q{JPEG_QUALITY}")
     while _running:
         ret, frame = cap.read()
         if not ret:
@@ -97,7 +100,7 @@ def capture_loop_opencv(source):
         if ret2:
             with _frame_lock:
                 _latest_frame = buf.tobytes()
-        time.sleep(1/15)
+        time.sleep(1/CAM_FPS)
     cap.release()
 
 def generate_frames():
@@ -106,7 +109,7 @@ def generate_frames():
             frame = _latest_frame
         if frame:
             yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-        time.sleep(1/15)
+        time.sleep(1/CAM_FPS)
 
 # ── BUG-014: Never expose RTSP credentials in HTML ──
 @app.route('/')
@@ -147,7 +150,7 @@ def status_route():
 
 if __name__ == '__main__':
     print(f"[NETAD] Starting on http://localhost:{PORT}")
-    print(f"[NETAD] Quality: {JPEG_QUALITY}% | FPS: 15")
+    print(f"[NETAD] Quality: {JPEG_QUALITY}% | FPS: {CAM_FPS} | Res: {CAM_WIDTH}x{CAM_HEIGHT}")
 
     if is_rtsp(CAMERA_SOURCE):
         print("[NETAD] Mode: RTSP via ffmpeg")
