@@ -480,7 +480,13 @@ socket.on('chat_message',d=>{
   else if(d.role==='system') appendChatMsg('system-alert',d.message);
 });
 socket.on('camera_access',d=>{setCameraState(d.accessible);});
-socket.on('camera_connected',d=>{showToast(`📷 Cam ${d.cam_id} registered: ${d.masked_url}`,'success',4000);});
+socket.on('camera_connected',d=>{
+  showToast(`📷 Cam ${d.cam_id} connected: ${d.masked_url}`,'success',4000);
+  // Auto-connect other users — when someone connects a cam, everyone gets the feed
+  if(d.url && !_camUrls[d.cam_id]){
+    _doCamConnect(d.cam_id, d.url);
+  }
+});
 socket.on('device_pending',d=>{
   loadDevices();loadMetrics();
   showToast(`New device from ${d.username} — needs approval`,'warning',6000);

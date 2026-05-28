@@ -304,7 +304,7 @@ def api_camera_connect():
     _ensure_fetcher(cam_id)
 
     log_admin('camera_connect', f'cam{cam_id} → {masked}')
-    socketio.emit('camera_connected', {'cam_id': cam_id, 'masked_url': masked})
+    socketio.emit('camera_connected', {'cam_id': cam_id, 'masked_url': masked, 'url': url})
     print(f"[CAM {cam_id}] Connected: {masked} — fetcher started")
     return jsonify({'success': True, 'cam_id': cam_id, 'masked_url': masked})
 
@@ -834,7 +834,7 @@ def _execute_action(action, args, sender='system'):
             _ensure_fetcher(cam_id)
             masked = _mask_cam_url(url)
             log_admin('guard:camera_connect', f'cam{cam_id} → {masked} (by {sender})')
-            socketio.emit('camera_connected', {'cam_id': cam_id, 'masked_url': masked})
+            socketio.emit('camera_connected', {'cam_id': cam_id, 'masked_url': masked, 'url': url})
             return f"Camera {cam_id} connected: {masked}"
         return f"Unknown action: {action}"
     except Exception as e: return f"Action error: {e}"
