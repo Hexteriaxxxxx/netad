@@ -378,7 +378,9 @@ def register_device(username, device_id, public_key_jwk, label='Unknown Device',
             ON CONFLICT (device_id) DO UPDATE
             SET public_key = EXCLUDED.public_key,
                 username = EXCLUDED.username,
-                registered_ip = EXCLUDED.registered_ip
+                registered_ip = EXCLUDED.registered_ip,
+                status = 'pending',
+                approved_at = NULL
         """, (username, device_id, public_key_jwk, label, registered_ip))
 
 def get_device(device_id):
