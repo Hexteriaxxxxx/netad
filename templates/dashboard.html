@@ -708,6 +708,7 @@ async function _doCamConnect(camId,url){
   document.getElementById(`cam${camId}-live`).style.display='block';
   document.getElementById(`cam${camId}-disconnect`).style.display='inline-block';
   _updateCamBadge();
+}
 
 function disconnectCam(camId){
   _camUrls[camId]='';
