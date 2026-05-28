@@ -493,6 +493,10 @@ socket.on('device_pending',d=>{
   document.getElementById('pending-alert').classList.add('show');
   document.getElementById('pending-alert-text').textContent=`New device from "${d.username}" is pending approval`;
   document.getElementById('tab-badge-devices').classList.add('show');
+  // Auto-switch to devices tab so admin sees it immediately
+  if(document.querySelector('.tab.active')?.dataset?.tab==='overview'){
+    switchTab('devices',document.querySelector('[data-tab=devices]'));
+  }
 });
 socket.on('device_approved',d=>{loadDevices();showToast(`✅ Device approved for ${d.username}`,'success',3500);});
 socket.on('user_logout',d=>{loadSessions();loadMetrics();});
@@ -615,6 +619,9 @@ function connectCam(camId){
 }
 
 function _doCamConnect(camId,url){
+  // Auto-correct /video or /stream to /frame
+  url = url.replace(/\/(video|stream)\/?$/, '/frame');
+  if(!url.endsWith('/frame')) url = url.replace(/\/?$/, '/frame');
   _camUrls[camId]=url;
   _camErrors[camId]=0;
   _stopPoller(camId);

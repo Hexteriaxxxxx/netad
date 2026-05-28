@@ -15,7 +15,7 @@ from database import (
     register_device, get_device, get_all_devices,
     approve_device, reject_device, delete_device, get_pending_devices,
     is_whitelisted, is_blacklisted, get_all_failed_count,
-    claim_token, get_device_public_key, clear_rate_limit,
+    claim_token, get_device_public_key, get_device_public_key_any_status, clear_rate_limit,
     get_db, normalize_ip, is_valid_ip, is_valid_username, is_valid_password
 )
 from dotenv import load_dotenv
@@ -368,12 +368,13 @@ def node4_device_signature(payload):
     device_id = payload.get('device_id', '')
     sig_b64   = payload.get('device_signature', '')
     message   = payload.get('device_message', '')
+    use_any   = payload.get('_use_any_status', False)
     if not all([username, device_id, sig_b64, message]):
         print("Node 4 FAIL: missing fields"); return 'FAIL'
     try:
         from cryptography.hazmat.primitives.asymmetric.ec import ECDSA, EllipticCurvePublicNumbers, SECP256R1
         from cryptography.hazmat.primitives import hashes
-        pub_jwk_str = get_device_public_key(username, device_id)
+        pub_jwk_str = get_device_public_key_any_status(username, device_id) if use_any else get_device_public_key(username, device_id)
         if not pub_jwk_str: print(f"Node 4 FAIL: no approved key for '{username}'"); return 'FAIL'
         jwk = json.loads(pub_jwk_str)
         def b64u(s):
@@ -1368,7 +1369,7 @@ def api_update_ip():
     client_ip  = request.remote_addr
     if not all([username, device_id, device_sig, device_msg]): return jsonify({'error': 'request failed'}), 400
     if not check_dev_rate(client_ip, max_attempts=5): return jsonify({'error': 'request failed'}), 429
-    if node4_device_signature({'username': username, 'device_id': device_id, 'device_signature': device_sig, 'device_message': device_msg}) != 'PASS':
+    if node4_device_signature({'username': username, 'device_id': device_id, 'device_signature': device_sig, 'device_message': device_msg, '_use_any_status': True}) != 'PASS':
         add_log(username, client_ip, 'DENIED', 'IP update — invalid sig')
         return jsonify({'error': 'invalid device signature'}), 403
     dev   = get_device(device_id)

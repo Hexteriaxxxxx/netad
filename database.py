@@ -397,6 +397,17 @@ def get_device_public_key(username, device_id):
         row = cur.fetchone()
         return row['public_key'] if row else None
 
+def get_device_public_key_any_status(username, device_id):
+    """For IP update only — allows pending devices to update their IP."""
+    with get_db() as conn:
+        cur = get_cursor(conn)
+        cur.execute(
+            "SELECT public_key FROM device_keys WHERE username = %s AND device_id = %s AND status IN ('approved', 'pending')",
+            (username, device_id)
+        )
+        row = cur.fetchone()
+        return row['public_key'] if row else None
+
 def get_all_devices():
     with get_db() as conn:
         cur = get_cursor(conn)
