@@ -329,7 +329,7 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
             <button class="cam-connect-btn" onclick="connectCam(1)">📷 CONNECT</button>
             <button class="cam-disconnect-btn" onclick="disconnectCam(1)" id="cam1-disconnect" style="display:none;">✕ DISC</button>
           </div>
-          <div class="cam-url-hint">ngrok HTTP/MJPEG loads directly · RTSP relayed via server</div>
+          <div class="cam-url-hint">All streams relayed via Railway · ngrok + RTSP supported</div>
         </div>
 
         <!-- Camera 2 -->
@@ -665,34 +665,9 @@ async function _doCamConnect(camId,url){
   _camImgErrors[camId]=0;
   const img=document.getElementById(`cam${camId}-img`);
 
-  const isHttp = url.toLowerCase().startsWith('http');
-
-  // HTTP/ngrok: skip server registration entirely — load directly in <img>
-  // No Railway involvement needed, no crash risk
-  if(isHttp){
-    _camUrls[camId]=url;
-    _camImgErrors[camId]=0;
-    const img=document.getElementById(`cam${camId}-img`);
-    img.onerror=null;
-    img.onload=null;
-    img.src=url;
-    img.onerror=()=>{
-      _camImgErrors[camId]++;
-      if(_camImgErrors[camId]>=MAX_IMG_ERRORS){
-        showToast(`Cam ${camId}: stream failed — check ngrok URL`,'error',6000);
-        disconnectCam(camId);
-      }
-    };
-    img.onload=()=>{ _camImgErrors[camId]=0; };
-    document.getElementById(`cam${camId}-locked`).style.display='none';
-    document.getElementById(`cam${camId}-live`).style.display='block';
-    document.getElementById(`cam${camId}-disconnect`).style.display='inline-block';
-    showToast(`📷 Cam ${camId} connected`,'success',3000);
-    _updateCamBadge();
-    return;
-  }
-
-  // RTSP: register with server for relay
+  // ALL streams (HTTP/ngrok and RTSP) go through Railway server relay.
+  // Railway fetches ONE connection to ngrok via _fetch_frames(), shares frame buffer with all browsers.
+  // 7 users = 7 browsers reading from Railway buffer — NOT 7 direct ngrok connections.
   showToast(`📷 Cam ${camId} connecting...`,'info',2000);
   try{
     const d=await fetch('/api/camera/connect',{
@@ -701,19 +676,19 @@ async function _doCamConnect(camId,url){
       body:JSON.stringify({cam_id:camId,url})
     }).then(r=>r.json());
     if(!d.success){
-      showToast(`Cam ${camId} register failed: ${d.error||'unknown'}`,'error',5000);
+      showToast(`Cam ${camId}: ${d.error||'connection failed'}`,'error',5000);
       _camUrls[camId]='';
       return;
     }
-    showToast(`📷 Cam ${camId} registered: ${d.masked_url}`,'success',3000);
+    showToast(`📷 Cam ${camId} connected`,'success',3000);
   }catch(e){
-    console.warn(`Cam ${camId} server register error:`,e);
-    showToast(`Cam ${camId}: could not reach server — is Railway running?`,'error',5000);
+    console.warn(`Cam ${camId} server error:`,e);
+    showToast(`Cam ${camId}: could not reach server`,'error',5000);
     _camUrls[camId]='';
     return;
   }
 
-  // RTSP relay src
+  // All browsers read from shared Railway buffer — never touches ngrok directly
   const src=`/api/camera/${camId}/stream`;
 
   img.onerror=null;
@@ -723,7 +698,7 @@ async function _doCamConnect(camId,url){
   img.onerror=()=>{
     _camImgErrors[camId]++;
     if(_camImgErrors[camId]>=MAX_IMG_ERRORS){
-      showToast(`Cam ${camId}: stream failed — check ngrok URL or run webcam_stream.py`,'error',6000);
+      showToast(`Cam ${camId}: stream failed — check ngrok URL or webcam_stream.py`,'error',6000);
       disconnectCam(camId);
     }
   };
@@ -733,7 +708,6 @@ async function _doCamConnect(camId,url){
   document.getElementById(`cam${camId}-live`).style.display='block';
   document.getElementById(`cam${camId}-disconnect`).style.display='inline-block';
   _updateCamBadge();
-}
 
 function disconnectCam(camId){
   _camUrls[camId]='';
