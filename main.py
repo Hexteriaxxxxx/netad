@@ -148,20 +148,19 @@ def generate_camera_stream(cam_id):
 
 @app.route('/api/camera/<int:cam_id>/stream')
 def camera_stream(cam_id):
-    url = get_camera_url(cam_id)
-    consensus = is_consensus_granted()
-    in_dynamic = cam_id in _dynamic_cams
-    print(f"[CAM {cam_id}] Stream request — logged_in: {'user' in session}, url: {url[:40] if url else 'NONE'}, consensus: {consensus}, in_dynamic: {in_dynamic}")
+    """RTSP-only relay. HTTP/ngrok streams load directly in browser — no relay needed."""
     if 'user' not in session:
-        print(f"[CAM {cam_id}] BLOCKED — not logged in")
         return jsonify({'error': 'unauthorized'}), 401
+    url = get_camera_url(cam_id)
     if not url:
-        print(f"[CAM {cam_id}] BLOCKED — no URL configured")
         return jsonify({'error': 'not configured'}), 503
-    if not consensus and not in_dynamic:
-        print(f"[CAM {cam_id}] BLOCKED — consensus not met and not in dynamic cams")
+    # HTTP/ngrok streams — tell browser to load directly, don't relay
+    if url.lower().startswith('http'):
+        return jsonify({'error': 'use direct URL', 'direct_url': url}), 400
+    # RTSP only — relay via OpenCV
+    if not is_consensus_granted() and cam_id not in _dynamic_cams:
         return jsonify({'error': 'consensus not met'}), 403
-    print(f"[CAM {cam_id}] Starting stream...")
+    print(f"[CAM {cam_id}] Starting RTSP relay for: {url[:40]}...")
     return Response(generate_camera_stream(cam_id), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/api/camera/connect', methods=['POST'])
