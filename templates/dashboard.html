@@ -331,33 +331,6 @@ body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(
           </div>
           <div class="cam-url-hint">All streams relayed via Railway · ngrok + RTSP supported</div>
         </div>
-
-        <!-- Camera 2 -->
-        <div class="cam-feed" style="margin-top:10px;" id="cam2-container">
-          <div class="cam-locked" id="cam2-locked">
-            <div class="cam-inner">
-              <div class="cam-dot" style="background:var(--red);box-shadow:0 0 10px var(--red);"></div>
-              <div class="cam-label" style="color:var(--red);">CAM 2 · LOCKED</div>
-            </div>
-          </div>
-          <div style="display:none;" id="cam2-live">
-            <button class="cam-fullscreen-btn" onclick="toggleCam(2)">⛶ EXPAND</button>
-            <div class="cam-live-badge"><div class="cam-live-dot"></div>LIVE</div>
-            <img class="cam-img" id="cam2-img" src="" alt="Camera 2" onclick="toggleCam(2)" title="Click to expand"/>
-          </div>
-        </div>
-
-        <!-- Camera 2 connect row -->
-        <div id="cam2-connect-area">
-          <div class="cam-connect-row">
-            <input class="cam-connect-input" id="cam2-url-input" placeholder="https://xxxx.ngrok-free.app/video (optional)" />
-            <button class="cam-connect-btn" onclick="connectCam(2)">📷 CONNECT</button>
-            <button class="cam-disconnect-btn" onclick="disconnectCam(2)" id="cam2-disconnect" style="display:none;">✕ DISC</button>
-          </div>
-          <div class="cam-url-hint">Optional second camera</div>
-        </div>
-
-        <div style="font-size:9px;font-family:var(--mono);color:var(--text3);margin-top:10px;text-align:center;" id="cam-footer-hint">Paste ngrok URL above to connect · RTSP also supported</div>
       </div>
     </div>
 
