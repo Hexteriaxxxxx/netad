@@ -123,6 +123,11 @@ def index():
     </body></html>
     '''
 
+@app.route('/stream')
+def stream_redirect():
+    """Alias — so both /stream and /video work in NETAD dashboard."""
+    return video_feed()
+
 @app.route('/video')
 def video_feed():
     return Response(

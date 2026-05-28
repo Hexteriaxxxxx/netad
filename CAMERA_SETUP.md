@@ -1,104 +1,114 @@
-# NETAD Camera Setup Guide (ngrok + webcam/RTSP)
+# NETAD — Camera Setup Guide (ngrok + Webcam / RTSP)
 
-## Requirements
-- Python installed
-- ngrok installed (`winget install Ngrok.Ngrok`)
-- ffmpeg installed (`winget install Gyan.FFmpeg`)
+## One-time Setup
+
+### 1. Install ngrok
+```powershell
+winget install Ngrok.Ngrok
+```
+
+### 2. Get authtoken
+- Pumunta sa [dashboard.ngrok.com](https://dashboard.ngrok.com) → login/signup
+- Your Authtoken → copy
+```cmd
+ngrok config add-authtoken YOUR_TOKEN_HERE
+```
 
 ---
 
-## Every Time You Want to Use the Camera
+## Every Session (gawin bawat demo/use)
 
-### Step 1 — Open Terminal 1: Start the camera stream server
+### Terminal 1 — Start webcam stream
 
-**If using laptop webcam:**
-```powershell
+**Laptop webcam:**
+```cmd
 cd C:\Users\ADMIN1\Downloads\files
+set CAMERA_SOURCE=0
 python webcam_stream.py
 ```
 
-**If using RTSP IP cam:**
-```powershell
+**RTSP IP cam:**
+```cmd
 cd C:\Users\ADMIN1\Downloads\files
-$env:CAMERA_SOURCE = "rtsp://USERNAME:PASSWORD@CAMERA_IP:554/stream1"
+set CAMERA_SOURCE=rtsp://USERNAME:PASSWORD@CAMERA_IP:554/stream1
 python webcam_stream.py
 ```
 
-Wait for:
+Hintayin:
 ```
+[NETAD] Webcam 0 opened via DirectShow ✓
 [NETAD] Stream ready! ✓
 [NETAD] Open: http://localhost:8080
 ```
 
----
-
-### Step 2 — Open Terminal 2 (new window): Start ngrok tunnel
-
-```powershell
+### Terminal 2 — Start ngrok tunnel (bagong window)
+```cmd
 ngrok http 8080
 ```
 
-Wait for:
+Hintayin:
 ```
 Forwarding  https://xxxx.ngrok-free.app -> http://localhost:8080
 ```
-
-Copy the `https://xxxx.ngrok-free.app` URL.
-
----
-
-### Step 3 — Connect camera in NETAD dashboard
-
-1. Open your Railway site and login
-2. Go to **OVERVIEW** tab
-3. Under **Camera Feeds → CAM 1** — paste:
-   ```
-   https://xxxx.ngrok-free.app/video
-   ```
-4. Click **📷 CONNECT**
-5. Live feed should appear
+Copy yung `https://xxxx.ngrok-free.app` URL.
 
 ---
 
-## Important Reminders
+## Sa NETAD Dashboard
 
-| Rule | Why |
-|------|-----|
-| Keep BOTH terminals open while using camera | Closing either kills the stream |
-| ngrok URL changes every restart | Update the input in dashboard after each restart |
-| Laptop must stay awake | Sleep/hibernate kills the stream |
-| Use ngrok URL only (not RTSP) in dashboard CAM input | RTSP can't reach Railway from local network |
-| RTSP URL goes in `$env:CAMERA_SOURCE` only | Only for `webcam_stream.py` locally |
-
----
-
-## If Something Goes Wrong
-
-**"Stream ready" but black screen in dashboard:**
-- Open `https://xxxx.ngrok-free.app` in browser first
-- If ngrok warning page appears, click "Visit Site"
-- Then try connecting in dashboard again
-
-**Camera not opening (RTSP):**
-- Test in VLC first: Media → Open Network Stream → paste RTSP URL
-- If VLC works, ffmpeg should work too
-
-**ngrok "session expired":**
-- Free ngrok disconnects after ~2 hours idle
-- Just restart: `ngrok http 8080` and get new URL
-
-**Lost ngrok authtoken:**
-- Login at dashboard.ngrok.com → Your Authtoken → copy
-- Run: `ngrok config add-authtoken YOUR_TOKEN`
-
----
-
-## Quick Reference
-
+1. Mag-login sa Railway site
+2. Pagkatapos ng **GRANTED** → nasa dashboard ka na
+3. **OVERVIEW tab → Camera Feeds → CAM 1 input** → i-paste:
 ```
-RTSP cam URL:   rtsp://USERNAME:PASSWORD@CAMERA_IP:554/stream1
-Stream server:  http://localhost:8080
-Stream path:    http://localhost:8080/video
-ngrok tunnel:   ngrok http 8080
-Dashboard cam:  https://xxxx.ngrok-free.app/video
+https://xxxx.ngrok-free.app/video
+```
+4. Click **📷 CONNECT**
+5. Live feed dapat lumabas
+
+> **Note:** RTSP URLs ay gumagana din sa CAM input — Railway server ang mag-re-relay nito.
+
+---
+
+## Reminders
+
+| | |
+|---|---|
+| Parehong terminals dapat bukas | Pag isang naisara, mawawala ang stream |
+| ngrok URL nagbabago pag nirestart | I-update sa dashboard input bawat session |
+| Gamitin CMD hindi PowerShell | `set CAMERA_SOURCE=0` ay CMD syntax |
+| Laptop dapat gising | Sleep mode = dead stream |
+| HTTP/ngrok at RTSP — parehong gumagana | Railway server ang nag-fe-fetch, hindi browser |
+
+---
+
+## Troubleshooting
+
+**Black screen sa dashboard:**
+- I-check kung tumatakbo pa ang `webcam_stream.py` at `ngrok` sa terminals
+- I-click **✕ DISC** → i-paste ulit yung URL → **📷 CONNECT**
+- Hindi na kailangan i-visit ang ngrok URL sa browser — awtomatiko na itong na-bypass ng server
+
+**"No frames yet" error:**
+- May ibang app (Teams, Zoom, etc.) na nag-o-occupy ng camera
+- Isara yung ibang apps → ulitin ang `python webcam_stream.py`
+
+**ngrok "ERR_NGROK_3200" o session expired:**
+- Libre ngrok ≈ 2 hours session
+- Restart: `ngrok http 8080` → bagong URL → i-update sa dashboard
+
+**RTSP hindi gumagana:**
+- I-test muna sa VLC: Media → Open Network Stream → i-paste ang RTSP URL
+- Kung gumagana sa VLC → gumagana din sa NETAD
+
+---
+
+## Quick Copy-Paste
+
+```cmd
+cd C:\Users\ADMIN1\Downloads\files
+set CAMERA_SOURCE=0
+python webcam_stream.py
+```
+```cmd
+ngrok http 8080
 ```

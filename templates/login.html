@@ -392,12 +392,16 @@ document.addEventListener('DOMContentLoaded',()=>{
       :'<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
   });
 
-  // CAPS LOCK: only check on actual character key presses, not modifier-only keys
-  pwInput.addEventListener('keydown', e => {
-    if(e.key.length > 1) return; // ignore Shift, CapsLock, Enter, Backspace, etc.
-    const capsOn = e.getModifierState && e.getModifierState('CapsLock');
+  // CAPS LOCK: check on keyup (more reliable across browsers than keydown)
+  // Also check on focus so warning shows immediately if caps was already on
+  function checkCaps(e){
+    if(!e.getModifierState) return;
+    const capsOn = e.getModifierState('CapsLock');
     capsHint.classList.toggle('show', capsOn);
-  });
+  }
+  pwInput.addEventListener('keyup', checkCaps);
+  pwInput.addEventListener('keydown', checkCaps);
+  pwInput.addEventListener('focus', checkCaps);
 
   // Hide warning when field loses focus
   pwInput.addEventListener('blur', () => capsHint.classList.remove('show'));

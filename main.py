@@ -265,10 +265,12 @@ def node6_rate_limit(payload):
     if is_blacklisted(ip): print(f"Node 6 FAIL: {ip} blacklisted"); return 'FAIL'
     if is_whitelisted(ip): print(f"Node 6 PASS: {ip} whitelisted"); return 'PASS'
     count = get_all_failed_count(ip)
+    print(f"Node 6 checking: {ip} has {count}/{MAX} failed attempts")
     if count >= MAX:
         add_to_blacklist(ip, 'temporary', 1800)
-        print(f"Node 6 FAIL: {ip} rate limited ({count})"); return 'FAIL'
-    print(f"Node 6 PASS: {ip} {count}/{MAX}"); return 'PASS'
+        print(f"Node 6 FAIL: {ip} auto-blacklisted ({count} attempts)")
+        return 'FAIL'
+    return 'PASS'
 
 INLINE_NODES = [
     ('Rate Limiting',         node6_rate_limit),
@@ -493,8 +495,15 @@ def detect_threats(username, ip, data, result, votes, user_agent='', csrf_failed
         if votes and votes[0] == 'FAIL':
             try:
                 count = get_all_failed_count(ip)
-                if count >= 5:
+                if count >= 3:  # lower threshold for detection vs blocking
                     threats.append({'type': 'BRUTE_FORCE', 'description': f'Rate limit hit — {count} failed attempts from {mask_ip(ip)}', 'severity': 'HIGH', 'score': -0.85})
+            except Exception: pass
+        elif votes and votes[0] == 'PASS':
+            # Even if rate limit passed, still log brute force if count is high
+            try:
+                count = get_all_failed_count(ip)
+                if count >= 3:
+                    threats.append({'type': 'BRUTE_FORCE', 'description': f'Multiple failed attempts — {count} from {mask_ip(ip)} (currently under limit)', 'severity': 'HIGH', 'score': -0.75})
             except Exception: pass
 
         if csrf_failed:
@@ -921,28 +930,31 @@ def api_vote_pending():
                 })
     return jsonify(result)
 
+@app.route('/api/action/request', methods=['POST'])
+def api_action_request():
+    """Creates a team vote for a sensitive action requested outside Guard AI chat.
+    Used by whitelist/blacklist/sessions tabs when user clicks Remove/Forgive/Kick."""
+    if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
+    d = request.get_json()
+    action = d.get('action', '')
+    args   = d.get('args', {})
+    sender = session.get('user', 'unknown')
+    if action not in VOTEABLE_ACTIONS:
+        return jsonify({'error': f'action {action} not voteable'}), 400
+    # Basic arg validation
+    if action in ('block_ip','forgive_ip','clear_rate_limit','add_whitelist','remove_whitelist'):
+        if not args.get('ip'): return jsonify({'error': 'missing ip'}), 400
+    if action == 'kick_session':
+        if not args.get('username'): return jsonify({'error': 'missing username'}), 400
+    vote_id, desc = _create_vote(action, args, sender)
+    log_admin(f'vote:requested', f'{desc} (by {sender} via dashboard)')
+    return jsonify({'success': True, 'vote_id': vote_id, 'description': desc})
+
+
 @app.route('/api/chat/history')
 def api_chat_history():
     if 'user' not in session: return jsonify({'error': 'unauthorized'}), 401
     return jsonify([{**dict(l), 'timestamp': str(l['timestamp'])} for l in get_chat_logs(50)])
-
-@app.route('/api/debug/db-check')
-def api_debug_db_check():
-    """Temporary debug endpoint — remove after fixing registration issue."""
-    try:
-        with get_db() as conn:
-            from database import get_cursor as _gc
-            cur = _gc(conn)
-            cur.execute("SELECT username, role FROM users ORDER BY username")
-            users = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT COUNT(*) as c FROM device_keys")
-            devices = cur.fetchone()['c']
-            cur.execute("SELECT COUNT(*) as c FROM whitelist")
-            wl = cur.fetchone()['c']
-        return jsonify({'users': users, 'device_count': devices, 'whitelist_count': wl, 'db': 'ok'})
-    except Exception as e:
-        return jsonify({'db': 'error', 'error': str(e)}), 500
-
 
 # ── ROUTES ──
 @app.route('/')
@@ -1015,6 +1027,13 @@ def login():
     }
     result, votes, steps = run_consensus(payload)
     granted = result == 'GRANTED'
+    # Hard block — if IP got blacklisted during this attempt (e.g. hit exactly 5)
+    # or was already blacklisted before consensus ran, deny regardless of other nodes
+    if granted and is_blacklisted(client_ip):
+        granted = False
+        result = 'DENIED'
+        print(f"[login] Overriding GRANTED — {client_ip} is blacklisted")
+        steps = [{'layer': s['layer'], 'result': 'FAIL' if s['layer'] == 'Rate Limiting' else s['result']} for s in steps]
     add_log(username, client_ip, result)
     threading.Thread(target=log_all_threats, args=(username, client_ip, data, result, votes, user_agent, False), daemon=True).start()
     if granted:
@@ -1028,9 +1047,10 @@ def login():
         set_consensus_state(True)
         # Auto-whitelist the IP on every successful login.
         # All 6 nodes passed (including ECDSA device sig) — the user is fully verified.
-        # This ensures IPs are always current without manual admin intervention,
-        # and is required once DISABLE_IP_WHITELIST is eventually turned off.
-        add_to_whitelist(client_ip, f'{username} (auto: login {datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")})')
+        wl_label = f'{username} (auto: login {datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")})'
+        add_to_whitelist(client_ip, wl_label)
+        socketio.emit('ip_whitelisted', {'ip': client_ip, 'label': wl_label, 'by': 'system'})
+        print(f"[login] Auto-whitelisted {client_ip} for {username}")
         socketio.emit('camera_access', {'accessible': True, 'reason': '6/6 consensus granted'})
     socketio.emit('login_attempt', {'username': username, 'ip': client_ip, 'result': result, 'votes': votes})
     return jsonify({'granted': granted, 'user': username, 'error': '' if granted else 'authentication failed', 'steps': steps, 'votes': votes})
@@ -1315,8 +1335,14 @@ def api_device_approve():
     # approve_device now returns list of revoked device_ids
     revoked = approve_device(did)
     dev = get_device(did)
-    if dev and dev.get('registered_ip'):
-        add_to_whitelist(dev['registered_ip'], f"{dev['username']} ({dev['label'][:30]})")
+    if dev:
+        reg_ip = (dev.get('registered_ip') or '').strip()
+        if reg_ip:
+            add_to_whitelist(normalize_ip(reg_ip), f"{dev['username']} ({dev.get('label','')[:30]}) — auto: device approved")
+            socketio.emit('ip_whitelisted', {'ip': reg_ip, 'label': dev['username'], 'by': session.get('user','admin')})
+            print(f"[approve] Auto-whitelisted {reg_ip} for {dev['username']}")
+        else:
+            print(f"[approve] WARNING: no registered_ip for device {did[:12]} — whitelist not updated")
     # Notify dashboard — new device approved
     socketio.emit('device_approved', {'device_id': did, 'username': dev['username'] if dev else ''})
     # Notify any revoked devices — their Node 4 will now FAIL

@@ -595,10 +595,10 @@ function switchTab(name,el){
   document.getElementById('tab-'+name).classList.add('active');
   if(el)el.classList.add('active');
   if(name==='devices'){loadDevices();document.getElementById('tab-badge-devices').classList.remove('show');}
-  if(name==='blacklist')loadBlacklist();
-  if(name==='whitelist')loadWhitelist();
+  if(name==='blacklist'){loadBlacklist();loadPendingVotes();}
+  if(name==='whitelist'){loadWhitelist();loadPendingVotes();}
   if(name==='ai')loadAiLogs();
-  if(name==='sessions')loadSessions();
+  if(name==='sessions'){loadSessions();loadPendingVotes();}
   if(name==='chat'){loadChatHistory();loadPendingVotes();}
   if(name==='users')loadUsers();
 }
@@ -1061,6 +1061,90 @@ async function doAddUser(){
   showToast(`User '${username}' added!`,'success',5000);
 }
 
+// ── VOTE PANEL (shown in whitelist/blacklist/sessions tabs) ──
+// Renders pending votes as a floating panel visible outside Guard AI chat
+function _renderVotePanel(){
+  let panel = document.getElementById('vote-panel-global');
+  if(!panel){
+    panel = document.createElement('div');
+    panel.id = 'vote-panel-global';
+    panel.style.cssText = 'position:fixed;bottom:24px;left:24px;z-index:150;display:flex;flex-direction:column;gap:8px;max-width:360px;pointer-events:all;';
+    document.body.appendChild(panel);
+  }
+  // Rebuild from _activePanelVotes
+  panel.innerHTML = '';
+  Object.values(_activePanelVotes).forEach(v => {
+    if(v.resolved) return;
+    const isRequester = v.requester === _currentUser;
+    const alreadyApproved = (v.approvals||[]).includes(_currentUser);
+    const card = document.createElement('div');
+    card.id = `panel-vote-${v.vote_id}`;
+    card.style.cssText = 'background:var(--bg2);border:1px solid rgba(255,179,68,0.4);border-radius:12px;padding:12px 14px;box-shadow:0 8px 32px rgba(0,0,0,0.4);';
+    card.innerHTML = `
+      <div style="font-family:var(--mono);font-size:9px;color:var(--amber);letter-spacing:1.5px;font-weight:700;margin-bottom:6px;">⏳ VOTE REQUIRED · ${v.approvals_count||1}/${v.required||2}</div>
+      <div style="font-size:12px;color:var(--text);font-weight:600;margin-bottom:4px;">${v.description}</div>
+      <div style="font-size:10px;font-family:var(--mono);color:var(--text2);margin-bottom:2px;">by: <b>${v.requester}</b></div>
+      <div style="font-size:10px;font-family:var(--mono);color:var(--text3);margin-bottom:10px;" id="pvote-approvers-${v.vote_id}">approved: ${(v.approvals||[]).join(', ')}</div>
+      <div style="display:flex;gap:6px;">
+        <button class="vote-approve" style="font-size:10px;padding:5px 14px;"
+          id="pvbtn-approve-${v.vote_id}"
+          ${isRequester||alreadyApproved?'disabled':''}
+          onclick="castVote('${v.vote_id}','approve')">
+          ${isRequester?'✓ REQUESTED':alreadyApproved?'✓ APPROVED':'✓ APPROVE'}
+        </button>
+        <button class="vote-reject" style="font-size:10px;padding:5px 14px;"
+          id="pvbtn-reject-${v.vote_id}"
+          ${isRequester?'disabled':''}
+          onclick="castVote('${v.vote_id}','reject')">
+          ✗ REJECT
+        </button>
+      </div>`;
+    panel.appendChild(card);
+  });
+  // Hide panel if no active votes
+  panel.style.display = Object.values(_activePanelVotes).some(v=>!v.resolved) ? 'flex' : 'none';
+}
+
+const _activePanelVotes = {};
+
+// Called when any action button outside chat requests a vote
+function requestViaChat(action, args, description){
+  // Optimistically show a pending vote in panel while waiting for server
+  showToast(`⏳ Requesting vote: ${description}`, 'warning', 4000);
+  // The actual vote is created by Guard AI or by direct API
+  // For direct (non-Guard-AI) actions, we POST to a new /api/action/request endpoint
+  fetch('/api/action/request', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({action, args})
+  }).then(r=>r.json()).then(d=>{
+    if(d.error) showToast(d.error, 'error', 5000);
+  }).catch(()=>showToast('Request failed', 'error'));
+}
+
+// Override doRemoveWl, doForgive, doKick to use vote system
+function doRemoveWl(ip){
+  confirm2({title:'Request Whitelist Removal?',
+    msg:`This will create a <b>team vote</b> to remove <strong>${ip}</strong> from trusted IPs.<br><br>Requires 2/7 team approvals.`,
+    icon:'⚠️',iconClass:'warn',btnLabel:'REQUEST VOTE',btnClass:'amber',
+    onConfirm:()=>requestViaChat('remove_whitelist',{ip},`Remove ${ip} from whitelist`)
+  });
+}
+function doForgive(ip){
+  confirm2({title:'Request IP Forgiveness?',
+    msg:`This will create a <b>team vote</b> to remove <strong>${ip}</strong> from the blacklist.<br><br>Requires 2/7 team approvals.`,
+    icon:'🔓',iconClass:'warn',btnLabel:'REQUEST VOTE',btnClass:'amber',
+    onConfirm:()=>requestViaChat('forgive_ip',{ip},`Unblock ${ip} from blacklist`)
+  });
+}
+function doKick(username){
+  confirm2({title:'Request Session Kick?',
+    msg:`This will create a <b>team vote</b> to kick <strong>${username}</strong>.<br><br>Requires 2/7 team approvals.`,
+    icon:'⚡',iconClass:'warn',btnLabel:'REQUEST VOTE',btnClass:'amber',
+    onConfirm:()=>requestViaChat('kick_session',{username},`Kick ${username} from system`)
+  });
+}
+
 // ── VOTE SYSTEM ──
 const _currentUser = '{{ user }}';
 const _voteTimers = {};
@@ -1169,18 +1253,41 @@ async function loadPendingVotes(){
   try{
     const votes = await fetch('/api/vote/pending').then(r=>r.json());
     votes.forEach(v => {
+      _activePanelVotes[v.vote_id] = {...v, resolved: false};
       if(!document.getElementById(`vote-${v.vote_id}`)) appendVoteMsg(v);
     });
+    _renderVotePanel();
   }catch(e){}
 }
 
 socket.on('vote_pending', d => {
+  // Track in panel votes
+  _activePanelVotes[d.vote_id] = {...d, resolved: false};
+  _renderVotePanel();
   appendVoteMsg(d);
   showToast(`⏳ Vote requested: ${d.description}`, 'warning', 6000);
 });
-socket.on('vote_update', d => { updateVoteMsg(d); });
+socket.on('vote_update', d => {
+  updateVoteMsg(d);
+  if(_activePanelVotes[d.vote_id]){
+    _activePanelVotes[d.vote_id].approvals = d.approvals;
+    _activePanelVotes[d.vote_id].approvals_count = d.approvals_count;
+    // Update panel approvers label
+    const el = document.getElementById(`pvote-approvers-${d.vote_id}`);
+    if(el) el.textContent = `approved: ${(d.approvals||[]).join(', ')} (${d.approvals_count}/${d.required||2})`;
+    // Disable approve btn if current user just approved
+    if((d.approvals||[]).includes(_currentUser)){
+      const btn = document.getElementById(`pvbtn-approve-${d.vote_id}`);
+      if(btn){ btn.disabled=true; btn.textContent='✓ APPROVED'; }
+    }
+  }
+});
 socket.on('vote_resolved', d => {
   resolveVoteMsg(d);
+  if(_activePanelVotes[d.vote_id]){
+    _activePanelVotes[d.vote_id].resolved = true;
+    _renderVotePanel();
+  }
   const msg = d.result==='approved' ? `✅ EXECUTED: ${d.description}` :
               d.result==='rejected' ? `❌ REJECTED: ${d.description}` :
               `⌛ EXPIRED: ${d.description}`;
