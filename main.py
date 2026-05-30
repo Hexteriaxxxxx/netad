@@ -720,8 +720,8 @@ def _get_system_context():
             wl_count = cur.fetchone()['c']
             cur.execute("SELECT COUNT(*) as c FROM device_keys WHERE status='pending'")
             pending = cur.fetchone()['c']
-        cur.execute("SELECT username FROM users ORDER BY username")
-        team_users = [r['username'] for r in cur.fetchall()]
+            cur.execute("SELECT username FROM users ORDER BY username")
+            team_users = [r['username'] for r in cur.fetchall()]
 
         online = [s for s in sessions if s.get('online')]
         ctx  = "=== LIVE NETAD STATE ===\n"
