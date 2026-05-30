@@ -748,7 +748,8 @@ GUARD_TOOLS = [
     {'type': 'function', 'function': {'name': 'clear_rate_limit', 'description': 'Clear rate limit for a specific IP. REQUIRES: explicit IP in x.x.x.x format AND explicit clear/reset command. Asking IF it was cleared is NOT a command.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
     {'type': 'function', 'function': {'name': 'add_whitelist', 'description': 'Add a specific IP to whitelist. REQUIRES: explicit IP and explicit add/whitelist command.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}, 'label': {'type': 'string'}}, 'required': ['ip']}}},
     {'type': 'function', 'function': {'name': 'remove_whitelist', 'description': 'Remove a specific IP from whitelist. REQUIRES: explicit IP and explicit remove command.', 'parameters': {'type': 'object', 'properties': {'ip': {'type': 'string'}}, 'required': ['ip']}}},
-    {'type': 'function', 'function': {'name': 'kick_session', 'description': 'Force logout a specific user. ONLY callable by admin (Gian). REQUIRES ALL OF THESE: (1) sender is admin, (2) explicit username stated, (3) explicit kick/logout/remove/terminate verb used. Mentioning a username in ANY other context (asking about them, reporting activity, saying they logged in) is NOT a kick command. NEVER call if any condition is missing.', 'parameters': {'type': 'object', 'properties': {'username': {'type': 'string'}}, 'required': ['username']}}},
+    {'type': 'function', 'function': {'name': 'kick_session', 'description': 'Force logout a specific user. ONLY callable by admin (Gian). REQUIRES ALL OF THESE: (1) sender is admin, (2) explicit username stated, (3) explicit kick/logout/remove/terminate verb used. Mentioning a username in ANY other context (asking about them, reporting activity, saying they logged in) is NOT a kick command. NEVER call if any condition is missing. NEVER call for device-related requests — use revoke_device instead.', 'parameters': {'type': 'object', 'properties': {'username': {'type': 'string'}}, 'required': ['username']}}},
+    {'type': 'function', 'function': {'name': 'revoke_device', 'description': 'Revoke/remove a user\'s registered device. Use when user says "revoke device", "remove device", "delete device". REQUIRES: explicit username. Different from kick_session — this removes device access, not session.', 'parameters': {'type': 'object', 'properties': {'username': {'type': 'string', 'description': 'Username whose device to revoke'}}, 'required': ['username']}}},
     {'type': 'function', 'function': {'name': 'connect_camera', 'description': 'Connect a camera stream URL. REQUIRES: full URL starting with https:// or rtsp://', 'parameters': {'type': 'object', 'properties': {'cam_id': {'type': 'integer'}, 'url': {'type': 'string'}}, 'required': ['cam_id', 'url']}}},
 ]
 
@@ -759,7 +760,7 @@ _pending_votes: dict = {}
 _votes_lock = threading.Lock()
 VOTE_TIMEOUT  = 300
 VOTES_REQUIRED = 2
-VOTEABLE_ACTIONS = {'block_ip','forgive_ip','clear_rate_limit','add_whitelist','remove_whitelist','kick_session'}
+VOTEABLE_ACTIONS = {'block_ip','forgive_ip','clear_rate_limit','add_whitelist','remove_whitelist','kick_session','revoke_device'}
 
 def _vote_description(action, args):
     if action == 'block_ip':         return f"Block {args.get('ip')} for 30 minutes"
@@ -768,6 +769,7 @@ def _vote_description(action, args):
     if action == 'add_whitelist':     return f"Add {args.get('ip')} to whitelist ({args.get('label','')})"
     if action == 'remove_whitelist':  return f"Remove {args.get('ip')} from whitelist"
     if action == 'kick_session':      return f"Kick {args.get('username')} from system"
+    if action == 'revoke_device':     return f"Revoke {args.get('username')}'s device"
     return action
 
 def _create_vote(action, args, requester):
@@ -825,6 +827,17 @@ def _execute_action(action, args, sender='system'):
             log_admin(f'guard:kick_session', f'{u} (by {sender})')
             socketio.emit('session_kicked', {'username': u})
             return f"Kicked {u}."
+        elif action == 'revoke_device':
+            username = args['username']
+            from database import get_all_devices
+            devices = [d for d in get_all_devices() if d['username'] == username and d['status'] == 'approved']
+            if not devices:
+                return f"No approved device found for {username}."
+            did = devices[0]['device_id']
+            delete_device(did)
+            log_admin(f'guard:revoke_device', f'{username} (by {sender})')
+            socketio.emit('device_revoked', {'device_id': did, 'username': username, 'reason': f'Revoked by Guard AI ({sender})'})
+            return f"Device for {username} has been revoked. {username} will need to re-register."
         elif action == 'connect_camera':
             cam_id = int(args['cam_id']); url = args['url']
             if not re.match(r'^(rtsp|rtsps|http|https)://', url, re.IGNORECASE): return "Invalid URL."
@@ -846,6 +859,10 @@ def _pre_validate_tool_call(tool_name, args, sender, original_message):
     msg_lower = original_message.lower().strip()
 
     if tool_name == 'kick_session':
+        # Block if message contains device-related words — should use revoke_device instead
+        device_words = ['device', 'revoke', 'registration', 'registered']
+        if any(w in msg_lower for w in device_words):
+            return False, "Server blocked kick — message is device-related, use revoke_device instead"
         # Block if negation words present near kick verb
         negations = ['dont', "don't", 'do not', 'not', 'no', 'stop', 'cancel',
                      'ndont', "n't", 'never', 'without', 'avoid', 'prevent']
