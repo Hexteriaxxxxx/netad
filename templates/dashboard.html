@@ -488,7 +488,8 @@ socket.on('camera_connected',d=>{
   }
 });
 socket.on('device_pending',d=>{
-  loadDevices();loadMetrics();
+  // Small delay to ensure DB write is committed before fetching
+  setTimeout(()=>{loadDevices();loadMetrics();},500);
   showToast(`New device from ${d.username} — needs approval`,'warning',6000);
   document.getElementById('pending-alert').classList.add('show');
   document.getElementById('pending-alert-text').textContent=`New device from "${d.username}" is pending approval`;

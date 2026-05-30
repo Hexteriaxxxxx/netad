@@ -841,7 +841,32 @@ def _execute_action(action, args, sender='system'):
         return f"Unknown action: {action}"
     except Exception as e: return f"Action error: {e}"
 
-def _run_tool(tool_name, args, sender='unknown'):
+def _pre_validate_tool_call(tool_name, args, sender, original_message):
+    """Server-side guard — rejects tool calls that the LLM shouldn't have made."""
+    msg_lower = original_message.lower().strip()
+
+    if tool_name == 'kick_session':
+        # Block if negation words present near kick verb
+        negations = ['dont', "don't", 'do not', 'not', 'no', 'stop', 'cancel',
+                     'ndont', "n't", 'never', 'without', 'avoid', 'prevent']
+        kick_verbs = ['kick', 'logout', 'log out', 'remove', 'terminate']
+        has_kick_verb = any(v in msg_lower for v in kick_verbs)
+        has_negation = any(n in msg_lower for n in negations)
+        if has_negation and has_kick_verb:
+            return False, f"Server blocked kick — negation detected in message: '{original_message[:60]}'"
+        # Also block if message is just a username with no verb
+        username = args.get('username', '')
+        if username and username.lower() == msg_lower.strip():
+            return False, "Server blocked kick — message is just a username, no action verb"
+
+    return True, None
+
+def _run_tool(tool_name, args, sender='unknown', original_message=''):
+    # Server-side pre-validation — catches LLM hallucinations
+    valid, reason = _pre_validate_tool_call(tool_name, args, sender, original_message)
+    if not valid:
+        print(f"[Guard] Tool call BLOCKED: {tool_name} — {reason}")
+        return f"⛔ Action blocked by server: {reason}"
     if tool_name in VOTEABLE_ACTIONS:
         vote_id, desc = _create_vote(tool_name, args, sender)
         return (f"⏳ VOTE CREATED — {desc}\n"
@@ -944,7 +969,7 @@ def api_chat():
                 'tool_calls': [{'id': tc.id, 'type': 'function', 'function': {'name': tc.function.name, 'arguments': tc.function.arguments}} for tc in mo.tool_calls]})
             for tc in mo.tool_calls:
                 args   = json.loads(tc.function.arguments)
-                result = _run_tool(tc.function.name, args, sender=sender)
+                result = _run_tool(tc.function.name, args, sender=sender, original_message=msg)
                 actions.append({'tool': tc.function.name, 'args': args, 'result': result})
                 messages.append({'role': 'tool', 'tool_call_id': tc.id, 'content': result})
                 with _ctx_lock: _ctx_cache['ts'] = 0
