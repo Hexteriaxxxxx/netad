@@ -844,6 +844,7 @@ async function doAddUser(){
   const res=await fetch('/api/users/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password,role})});
   const data=await res.json();
   if(data.error){showToast(data.error,'error');return;}
+  if(data.pending_vote){showToast(`⏳ Vote created — ${data.description}. Needs teammate approval.`,'warning',6000);}
   document.getElementById('usr-username').value='';
   document.getElementById('usr-password').value='';
   document.getElementById('usr-role').value='';

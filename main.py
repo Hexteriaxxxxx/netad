@@ -720,10 +720,13 @@ def _get_system_context():
             wl_count = cur.fetchone()['c']
             cur.execute("SELECT COUNT(*) as c FROM device_keys WHERE status='pending'")
             pending = cur.fetchone()['c']
+        cur.execute("SELECT username FROM users ORDER BY username")
+        team_users = [r['username'] for r in cur.fetchall()]
 
         online = [s for s in sessions if s.get('online')]
         ctx  = "=== LIVE NETAD STATE ===\n"
         ctx += f"Camera: {'OPEN' if is_consensus_granted() else 'LOCKED'} | Nodes: ALL 6 ONLINE | Pending devices: {pending}\n"
+        ctx += f"Registered users: {', '.join(team_users)}\n"
         ctx += f"Sessions ({len(online)} online):\n"
         for s in sessions:
             ctx += f"  {s.get('username','')} | {'ON' if s.get('online') else 'OFF'} | {mask_ip(str(s.get('ip','')))} | {s.get('role','')}\n"
@@ -760,7 +763,7 @@ _pending_votes: dict = {}
 _votes_lock = threading.Lock()
 VOTE_TIMEOUT  = 300
 VOTES_REQUIRED = 2
-VOTEABLE_ACTIONS = {'block_ip','forgive_ip','clear_rate_limit','add_whitelist','remove_whitelist','kick_session','revoke_device'}
+VOTEABLE_ACTIONS = {'block_ip','forgive_ip','clear_rate_limit','add_whitelist','remove_whitelist','kick_session','revoke_device','add_user'}
 
 def _vote_description(action, args):
     if action == 'block_ip':         return f"Block {args.get('ip')} for 30 minutes"
@@ -770,6 +773,7 @@ def _vote_description(action, args):
     if action == 'remove_whitelist':  return f"Remove {args.get('ip')} from whitelist"
     if action == 'kick_session':      return f"Kick {args.get('username')} from system"
     if action == 'revoke_device':     return f"Revoke {args.get('username')}'s device"
+    if action == 'add_user':          return f"Add new user '{args.get('username')}' ({args.get('role','Member')})"
     return action
 
 def _create_vote(action, args, requester):
@@ -838,6 +842,22 @@ def _execute_action(action, args, sender='system'):
             log_admin(f'guard:revoke_device', f'{username} (by {sender})')
             socketio.emit('device_revoked', {'device_id': did, 'username': username, 'reason': f'Revoked by Guard AI ({sender})'})
             return f"Device for {username} has been revoked. {username} will need to re-register."
+        elif action == 'add_user':
+            import bcrypt as _bcrypt
+            username = args['username']
+            password = args['password']
+            role     = args.get('role', 'Security Officer')
+            hashed   = _bcrypt.hashpw(password.encode(), _bcrypt.gensalt(rounds=12)).decode()
+            from database import get_cursor as _gc
+            with get_db() as conn:
+                cur = _gc(conn)
+                cur.execute("INSERT INTO users (username, password_hash, role, display_name) VALUES (%s,%s,%s,%s) ON CONFLICT (username) DO NOTHING",
+                            (username, hashed, role, username))
+                if cur.rowcount == 0: return f"User '{username}' already exists."
+            with _valid_users_lock: _valid_users_cache['ts'] = 0
+            log_admin('add_user', f'{username} (approved via vote by {sender})')
+            socketio.emit('user_added', {'username': username, 'role': role, 'by': sender})
+            return f"User '{username}' added successfully as {role}."
         elif action == 'connect_camera':
             cam_id = int(args['cam_id']); url = args['url']
             if not re.match(r'^(rtsp|rtsps|http|https)://', url, re.IGNORECASE): return "Invalid URL."
@@ -908,7 +928,7 @@ DEVICE REGISTRATION POLICY:
 - Only ONE approved device per user at a time — approving a new device revokes the old one
 - All 7 users have equal privileges — no special admin bypass
 
-TEAM: admin(Gian), kevin, josiah, jm, karl, nico, lj
+TEAM: dynamic — pulled from DB at runtime (see LIVE NETAD STATE above)
 NORMAL PATTERNS: PH IPs, 5AM-10PM PH time, 1 device each, 1-3 logins/day
 SUSPICIOUS: midnight-4AM PH | 3+ attempts/60s | unknown usernames | non-PH IPs
 
@@ -1501,20 +1521,11 @@ def api_add_user():
     if not username or not password: return jsonify({'error': 'Username and password required'}), 400
     if not is_valid_username(username): return jsonify({'error': 'Username must be 3-50 chars, letters/numbers/underscore only'}), 400
     if not is_valid_password(password): return jsonify({'error': 'Password must be at least 8 characters'}), 400
-    import bcrypt
-    hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
-    try:
-        from database import get_cursor as _gc
-        with get_db() as conn:
-            cur = _gc(conn)
-            cur.execute("INSERT INTO users (username, password_hash, role, display_name) VALUES (%s,%s,%s,%s) ON CONFLICT (username) DO NOTHING",
-                        (username, hashed, role, username))
-            if cur.rowcount == 0: return jsonify({'error': 'username already exists'}), 409
-        log_admin('add_user', username)
-        with _valid_users_lock: _valid_users_cache['ts'] = 0
-        socketio.emit('user_added', {'username': username, 'role': role, 'by': session.get('user','admin')})
-        return jsonify({'success': True})
-    except Exception as e: return jsonify({'error': str(e)}), 500
+    # Require team vote before adding new user
+    sender = session.get('user', 'unknown')
+    vote_id, desc = _create_vote('add_user', {'username': username, 'password': password, 'role': role}, sender)
+    log_admin('vote:add_user', f'{username} (by {sender})')
+    return jsonify({'success': True, 'pending_vote': True, 'vote_id': vote_id, 'description': desc, 'message': f'Vote created — {desc}. Requires teammate approval.'})
 
 # ── EMERGENCY BREAK-GLASS ──
 _em_used     = False
